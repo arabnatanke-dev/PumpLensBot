@@ -18,7 +18,9 @@ COPY settings.yaml ./settings.yaml
 COPY alembic.ini ./alembic.ini
 COPY migrations ./migrations
 
-RUN useradd --create-home --uid 10001 pumplens
+RUN useradd --create-home --uid 10001 pumplens \
+    && mkdir -p /app/data \
+    && chown -R pumplens:pumplens /app/data
 USER pumplens
 
 ENTRYPOINT ["pumplens"]

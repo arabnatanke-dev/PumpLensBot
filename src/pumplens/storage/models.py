@@ -288,6 +288,32 @@ class PositionRecord(UUIDPrimaryKey, Timestamped, Base):
     pnl: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
 
 
+class RiskAlertRecord(UUIDPrimaryKey, Timestamped, Base):
+    """Persistent, re-armable portfolio alert. / Сохраняемый переактивируемый алерт."""
+
+    __tablename__ = "risk_alerts"
+    __table_args__ = (
+        UniqueConstraint("dedupe_key", name="uq_risk_alert_dedupe_key"),
+        Index("ix_risk_alert_status_created", "status", "created_at"),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    exchange_account_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("exchange_accounts.id"),
+        nullable=False,
+    )
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    symbol: Mapped[str | None] = mapped_column(String(32))
+    alert_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    dedupe_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="PENDING", nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error: Mapped[str | None] = mapped_column(String(128))
+
+
 class DeliveryRecord(UUIDPrimaryKey, Timestamped, Base):
     __tablename__ = "deliveries"
     __table_args__ = (

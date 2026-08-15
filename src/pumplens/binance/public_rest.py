@@ -98,10 +98,26 @@ class BinancePublicClient:
             for row in payload
         }
 
-    async def klines(self, symbol: str, limit: int = 120) -> list[Kline]:
+    async def klines(
+        self,
+        symbol: str,
+        limit: int = 120,
+        *,
+        start_time_ms: int | None = None,
+        end_time_ms: int | None = None,
+    ) -> list[Kline]:
+        params: dict[str, str | int] = {
+            "symbol": symbol,
+            "interval": "1m",
+            "limit": limit,
+        }
+        if start_time_ms is not None:
+            params["startTime"] = start_time_ms
+        if end_time_ms is not None:
+            params["endTime"] = end_time_ms
         payload = await self._get(
             "/fapi/v1/klines",
-            params={"symbol": symbol, "interval": "1m", "limit": limit},
+            params=params,
             weight=1 if limit < 100 else 2,
         )
         now_ms = int(time.time() * 1_000)

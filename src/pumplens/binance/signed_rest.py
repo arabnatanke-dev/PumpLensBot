@@ -127,6 +127,43 @@ class BinanceReadOnlyClient:
             if isinstance(item, Mapping) and "symbol" in item and "price" in item
         }
 
+    async def start_futures_user_stream(self) -> str:
+        """Create a USD-M listen key. / Создаёт listen key USD-M."""
+
+        payload = await self._futures_user_stream_request("POST")
+        listen_key = payload.get("listenKey") if isinstance(payload, Mapping) else None
+        if not isinstance(listen_key, str) or not listen_key:
+            raise BinanceCredentialError("futures_listen_key_response_invalid")
+        return listen_key
+
+    async def keepalive_futures_user_stream(self) -> None:
+        """Refresh the current USD-M listen key. / Продлевает listen key USD-M."""
+
+        await self._futures_user_stream_request("PUT")
+
+    async def close_futures_user_stream(self) -> None:
+        """Close the current USD-M listen key. / Закрывает listen key USD-M."""
+
+        await self._futures_user_stream_request("DELETE")
+
+    def signed_websocket_params(self) -> dict[str, str | int]:
+        """Build HMAC params for Spot WS API. / Подписывает параметры Spot WS API."""
+
+        params: dict[str, str | int] = {
+            "apiKey": self._api_key,
+            "timestamp": int(time.time() * 1_000),
+        }
+        params["signature"] = self._signature(params)
+        return params
+
+    async def _futures_user_stream_request(self, method: str) -> Any:
+        try:
+            response = await self._futures.request(method, "/fapi/v1/listenKey")
+            response.raise_for_status()
+            return response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise BinanceCredentialError("futures_user_stream_unavailable") from exc
+
     async def _signed_get(
         self,
         client: httpx.AsyncClient,
@@ -136,12 +173,8 @@ class BinanceReadOnlyClient:
         query: dict[str, str | int] = dict(params or {})
         query["timestamp"] = int(time.time() * 1_000)
         query["recvWindow"] = 5_000
-        encoded = urlencode(query)
-        query["signature"] = hmac.new(
-            self._secret_key,
-            encoded.encode(),
-            hashlib.sha256,
-        ).hexdigest()
+        query = dict(sorted(query.items()))
+        query["signature"] = self._signature(query)
         try:
             response = await client.get(path, params=query)
             response.raise_for_status()
@@ -150,3 +183,10 @@ class BinanceReadOnlyClient:
             # Do not leak response bodies: exchanges may echo request details.
             # Не выводим response body: биржа может вернуть детали запроса.
             raise BinanceCredentialError("binance_read_verification_failed") from exc
+
+    def _signature(self, params: Mapping[str, str | int]) -> str:
+        # Binance signs parameters in alphabetical order for WebSocket requests;
+        # sorting also keeps REST signatures deterministic. / Для WS Binance требует
+        # алфавитный порядок; сортировка делает и REST-подпись детерминированной.
+        encoded = urlencode(sorted(params.items()))
+        return hmac.new(self._secret_key, encoded.encode(), hashlib.sha256).hexdigest()

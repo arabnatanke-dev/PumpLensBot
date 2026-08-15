@@ -51,24 +51,9 @@ class PortfolioService:
         exchange_account_id: uuid.UUID,
     ) -> PortfolioSummary:
         account = await session.get(ExchangeAccountRecord, exchange_account_id)
-        credential = await session.get(EncryptedCredentialRecord, exchange_account_id)
-        if account is None or credential is None:
+        if account is None:
             raise ValueError("exchange_account_not_found")
-        user = await session.get(UserRecord, account.user_id)
-        if user is None:
-            raise ValueError("exchange_account_user_not_found")
-
-        encrypted = EncryptedCredentials(
-            ciphertext_b64=base64.b64encode(credential.ciphertext).decode(),
-            nonce_b64=base64.b64encode(credential.nonce).decode(),
-            key_version=credential.key_version,
-            api_key_last4=account.key_last4,
-        )
-        api_key, secret_key = self._vault.decrypt(
-            encrypted,
-            exchange_account_id=str(account.id),
-            telegram_user_id=user.telegram_user_id,
-        )
+        api_key, secret_key = await self.credentials(session, exchange_account_id)
 
         try:
             async with BinanceReadOnlyClient(api_key, secret_key) as client:
@@ -123,6 +108,32 @@ class PortfolioService:
             data_quality=quality,
         )
 
+    async def credentials(
+        self,
+        session: AsyncSession,
+        exchange_account_id: uuid.UUID,
+    ) -> tuple[str, str]:
+        """Decrypt credentials only inside the portfolio boundary. / Расшифровывает ключи."""
+
+        account = await session.get(ExchangeAccountRecord, exchange_account_id)
+        credential = await session.get(EncryptedCredentialRecord, exchange_account_id)
+        if account is None or credential is None:
+            raise ValueError("exchange_account_not_found")
+        user = await session.get(UserRecord, account.user_id)
+        if user is None:
+            raise ValueError("exchange_account_user_not_found")
+        encrypted = EncryptedCredentials(
+            ciphertext_b64=base64.b64encode(credential.ciphertext).decode(),
+            nonce_b64=base64.b64encode(credential.nonce).decode(),
+            key_version=credential.key_version,
+            api_key_last4=account.key_last4,
+        )
+        return self._vault.decrypt(
+            encrypted,
+            exchange_account_id=str(account.id),
+            telegram_user_id=user.telegram_user_id,
+        )
+
 
 class PortfolioReconciler:
     """One failing key cannot affect other accounts. / Ошибка ключа не влияет на других."""
@@ -138,6 +149,7 @@ class PortfolioReconciler:
         self._service = service
         self._interval_seconds = interval_seconds
         self._semaphore = asyncio.Semaphore(concurrency)
+        self._account_locks: dict[uuid.UUID, asyncio.Lock] = {}
 
     async def run(self) -> None:
         while True:
@@ -151,14 +163,18 @@ class PortfolioReconciler:
                 )
             async with asyncio.TaskGroup() as group:
                 for account_id in ids:
-                    group.create_task(self._reconcile_one(account_id))
+                    group.create_task(self.reconcile_now(account_id))
             await asyncio.sleep(self._interval_seconds)
 
-    async def _reconcile_one(self, account_id: uuid.UUID) -> None:
-        async with self._semaphore:
+    async def reconcile_now(self, account_id: uuid.UUID) -> bool:
+        """Run one serialized reconciliation. / Выполняет одну последовательную сверку."""
+
+        lock = self._account_locks.setdefault(account_id, asyncio.Lock())
+        async with lock, self._semaphore:
             try:
                 async with self._database.session() as session, session.begin():
                     await self._service.reconcile(session, account_id)
+                return True
             except BinanceCredentialError as exc:
                 await self._mark_stale(account_id)
                 log.warning(
@@ -166,12 +182,19 @@ class PortfolioReconciler:
                     exchange_account_id=str(account_id),
                     error=type(exc).__name__,
                 )
+                return False
             except Exception as exc:
                 log.warning(
                     "portfolio_reconcile_failed",
                     exchange_account_id=str(account_id),
                     error=type(exc).__name__,
                 )
+                return False
+
+    async def _reconcile_one(self, account_id: uuid.UUID) -> None:
+        """Compatibility wrapper for tests. / Совместимость со старыми тестами."""
+
+        await self.reconcile_now(account_id)
 
     async def _mark_stale(self, account_id: uuid.UUID) -> None:
         """Commit STALE outside the failed sync. / Коммитит STALE вне неудачной сверки."""

@@ -61,3 +61,35 @@ def binance_keyboard(connect_url: str | None) -> InlineKeyboardMarkup:
         )
     rows.append([InlineKeyboardButton(text="Позже", callback_data="binance:skip")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def connected_binance_keyboard(connect_url: str | None = None) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(text="💼 Портфель", callback_data="binance:portfolio"),
+            InlineKeyboardButton(text="📊 Позиции", callback_data="binance:positions"),
+        ],
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data="binance:refresh")],
+    ]
+    if connect_url:
+        rows.append(
+            [InlineKeyboardButton(text="Заменить API-ключ", web_app=WebAppInfo(url=connect_url))]
+        )
+    rows.append(
+        [InlineKeyboardButton(text="Отключить Binance", callback_data="binance:disconnect")]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def disconnect_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Да, отключить",
+                    callback_data="binance:disconnect_confirm",
+                )
+            ],
+            [InlineKeyboardButton(text="Отмена", callback_data="binance:disconnect_cancel")],
+        ]
+    )

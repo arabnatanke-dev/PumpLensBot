@@ -41,6 +41,16 @@ portfolio:
   rest_reconcile_seconds: 300
   listen_key_keepalive_seconds: 2700
   max_private_accounts_per_instance: 50
+  account_discovery_seconds: 5
+  event_reconcile_debounce_seconds: 1
+  stale_after_seconds: 600
+  risk_scan_seconds: 5
+  liquidation_warning_pct: 5
+  pnl_milestones_pct: [5, 8, 10, 15, 20]
+
+replay:
+  enabled: true
+  record_path: data/market.jsonl
 
 notifications:
   edit_debounce_seconds: 4

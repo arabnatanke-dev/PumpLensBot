@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 from pumplens.cli.scanner import run_scanner
 from pumplens.config import AppSettings, RuntimeSecrets
+from pumplens.portfolio.private_stream import PrivateAccountStreamManager
+from pumplens.portfolio.risk import PortfolioRiskMonitor, RiskAlertWorker
 from pumplens.portfolio.service import PortfolioReconciler, PortfolioService
+from pumplens.replay.evaluator import SignalOutcomeEvaluator
 from pumplens.security.credential_vault import CredentialVault
 from pumplens.service_state import ServiceState
 from pumplens.storage.db import Database
@@ -29,12 +33,31 @@ async def run_full_service(settings: AppSettings, runtime: RuntimeSecrets) -> No
     service_state = ServiceState()
     bot = create_bot(token)
     fanout = TransitionFanout(database)
-    delivery_worker = DeliveryWorker(database, bot)
+    delivery_worker = DeliveryWorker(database, bot, runtime.public_base_url)
+    portfolio_service = PortfolioService(CredentialVault(master_key))
     portfolio_reconciler = PortfolioReconciler(
         database,
-        PortfolioService(CredentialVault(master_key)),
+        portfolio_service,
         interval_seconds=settings.portfolio.rest_reconcile_seconds,
     )
+    private_streams = PrivateAccountStreamManager(
+        database,
+        portfolio_service,
+        portfolio_reconciler,
+        discovery_seconds=settings.portfolio.account_discovery_seconds,
+        reconcile_debounce_seconds=settings.portfolio.event_reconcile_debounce_seconds,
+        listen_key_keepalive_seconds=settings.portfolio.listen_key_keepalive_seconds,
+        max_accounts=settings.portfolio.max_private_accounts_per_instance,
+    )
+    risk_monitor = PortfolioRiskMonitor(
+        database,
+        interval_seconds=settings.portfolio.risk_scan_seconds,
+        stale_after_seconds=settings.portfolio.stale_after_seconds,
+        liquidation_warning_pct=settings.portfolio.liquidation_warning_pct,
+        pnl_milestones_pct=tuple(float(value) for value in settings.portfolio.pnl_milestones_pct),
+    )
+    risk_worker = RiskAlertWorker(database, bot, runtime.public_base_url)
+    outcome_evaluator = SignalOutcomeEvaluator(database, settings.binance.rest_base_url)
     web_app = create_web_app(
         runtime=runtime,
         database=database,
@@ -48,6 +71,9 @@ async def run_full_service(settings: AppSettings, runtime: RuntimeSecrets) -> No
                     settings,
                     service_state=service_state,
                     transition_handler=fanout,
+                    record_path=Path(settings.replay.record_path)
+                    if settings.replay.enabled
+                    else None,
                 ),
                 name="scanner",
             )
@@ -59,6 +85,7 @@ async def run_full_service(settings: AppSettings, runtime: RuntimeSecrets) -> No
                     runtime=runtime,
                     connect_sessions=connect_sessions,
                     service_state=service_state,
+                    portfolio_reconciler=portfolio_reconciler,
                 ),
                 name="telegram-bot",
             )
@@ -67,6 +94,10 @@ async def run_full_service(settings: AppSettings, runtime: RuntimeSecrets) -> No
                 name="mini-app",
             )
             group.create_task(portfolio_reconciler.run(), name="portfolio-reconciler")
+            group.create_task(private_streams.run(), name="private-account-streams")
+            group.create_task(risk_monitor.run(), name="portfolio-risk-monitor")
+            group.create_task(risk_worker.run(), name="portfolio-risk-delivery")
+            group.create_task(outcome_evaluator.run(), name="signal-outcome-evaluator")
             group.create_task(delivery_worker.run(), name="telegram-delivery")
     finally:
         await bot.session.close()

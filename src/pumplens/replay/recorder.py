@@ -22,7 +22,9 @@ class MarketEventRecorder:
 
     async def open(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._file = await aiofiles.open(self._path, "w", encoding="utf-8")
+        # Append preserves the production history across process restarts.
+        # Append сохраняет production-историю между перезапусками процесса.
+        self._file = await aiofiles.open(self._path, "a", encoding="utf-8")
 
     async def close(self) -> None:
         if self._file is not None:

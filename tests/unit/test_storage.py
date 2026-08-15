@@ -123,6 +123,7 @@ def test_schema_contains_all_mvp_tables() -> None:
         "encrypted_credentials",
         "portfolio_snapshots",
         "positions",
+        "risk_alerts",
         "deliveries",
         "service_health",
     }

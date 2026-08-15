@@ -106,9 +106,15 @@ class TransitionFanout:
 
 
 class DeliveryWorker:
-    def __init__(self, database: Database, bot: Bot) -> None:
+    def __init__(
+        self,
+        database: Database,
+        bot: Bot,
+        public_base_url: str | None = None,
+    ) -> None:
         self._database = database
         self._bot = bot
+        self._public_base_url = public_base_url
         self._last_chat_delivery: dict[int, float] = {}
 
     async def run(self) -> None:
@@ -149,7 +155,7 @@ class DeliveryWorker:
                 .limit(1)
             )
             text = format_signal(signal, feature.features_json if feature else {})
-            keyboard = signal_keyboard(signal.symbol)
+            keyboard = signal_keyboard(signal.symbol, self._public_base_url)
             target_message_id = await self._watch_message_id(session, job)
 
         await self._respect_chat_rate(job.chat_id)
@@ -249,13 +255,16 @@ def format_signal(signal: SignalRecord, features: dict[str, Any]) -> str:
     )
 
 
-def signal_keyboard(symbol: str) -> InlineKeyboardMarkup:
+def signal_keyboard(symbol: str, public_base_url: str | None = None) -> InlineKeyboardMarkup:
+    target = f"https://www.binance.com/en/futures/{symbol}"
+    if public_base_url:
+        target = f"{public_base_url.rstrip('/')}/go/binance/{symbol}"
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
                     text="Открыть Binance",
-                    url=f"https://www.binance.com/en/futures/{symbol}",
+                    url=target,
                 )
             ]
         ]

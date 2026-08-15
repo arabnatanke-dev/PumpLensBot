@@ -88,6 +88,17 @@ class PortfolioSettings(StrictModel):
     rest_reconcile_seconds: PositiveInt = 300
     listen_key_keepalive_seconds: PositiveInt = 2_700
     max_private_accounts_per_instance: PositiveInt = 50
+    account_discovery_seconds: PositiveFloat = 5.0
+    event_reconcile_debounce_seconds: PositiveFloat = 1.0
+    stale_after_seconds: PositiveInt = 600
+    risk_scan_seconds: PositiveFloat = 5.0
+    liquidation_warning_pct: PositiveFloat = 5.0
+    pnl_milestones_pct: tuple[PositiveFloat, ...] = (5.0, 8.0, 10.0, 15.0, 20.0)
+
+
+class ReplaySettings(StrictModel):
+    enabled: bool = True
+    record_path: str = "data/market.jsonl"
 
 
 class NotificationSettings(StrictModel):
@@ -103,6 +114,7 @@ class AppSettings(StrictModel):
     oi: OpenInterestSettings = OpenInterestSettings()
     onboarding: OnboardingSettings = OnboardingSettings()
     portfolio: PortfolioSettings = PortfolioSettings()
+    replay: ReplaySettings = ReplaySettings()
     notifications: NotificationSettings = NotificationSettings()
 
 

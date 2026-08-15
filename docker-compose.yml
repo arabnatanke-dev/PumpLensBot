@@ -10,6 +10,9 @@ services:
       # Keep public thresholds editable without rebuilding the image.
       # Публичные пороги можно менять без пересборки образа.
       - ./settings.yaml:/app/settings.yaml:ro
+      # Persistent normalized events for replay and outcome analysis.
+      # Нормализованные события для replay и анализа результатов.
+      - ./data:/app/data
     depends_on:
       postgres:
         condition: service_healthy

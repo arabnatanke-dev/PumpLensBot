@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
@@ -160,6 +162,30 @@ def create_web_app(
             connected=True,
             key_last4=encrypted.api_key_last4,
             message="Read-only Binance connected / Read-only Binance подключён",
+        )
+
+    @app.get("/go/binance/{symbol}", response_class=HTMLResponse)
+    async def open_binance(request: Request, symbol: str) -> HTMLResponse:
+        """Try the native app, then fall back to Binance Web. / Открывает app с fallback."""
+
+        normalized = symbol.upper()
+        if not re.fullmatch(r"[A-Z0-9]{5,24}", normalized):
+            raise HTTPException(status_code=404, detail="invalid_symbol")
+        web_url = f"https://www.binance.com/en/futures/{normalized}"
+        encoded_web = quote(web_url, safe="")
+        user_agent = request.headers.get("user-agent", "").lower()
+        if "android" in user_agent:
+            app_url = (
+                f"intent://www.binance.com/en/futures/{normalized}#Intent;scheme=https;"
+                f"package=com.binance.dev;S.browser_fallback_url={encoded_web};end"
+            )
+        else:
+            app_url = f"bnc://app.binance.com/uni-qr?url={encoded_web}"
+        return templates.TemplateResponse(
+            request,
+            "open_binance.html",
+            {"symbol": normalized, "app_url": app_url, "web_url": web_url},
+            headers={"Cache-Control": "no-store"},
         )
 
     @app.get("/health/live")

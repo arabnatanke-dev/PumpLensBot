@@ -82,10 +82,14 @@ docker compose ps
 `POSTGRES_PASSWORD` is mandatory; Docker refuses `change_me` and the example placeholder.
 `POSTGRES_PASSWORD` обязателен; Docker отклоняет `change_me` и пример-заглушку.
 
-Binance USD-M streams use separate routed connections: regular market data through
-`/market`, and book/depth data through `/public`.
-Потоки Binance USD-M разделены: обычные рыночные данные идут через `/market`,
-а book/depth — через `/public`.
+Binance USD-M public streams use separate routed connections: regular market data through
+`/market`, and book/depth data through `/public`. Connected portfolios use the current
+Futures `/private` user stream and signed Spot WebSocket API. Private events trigger a
+debounced full read-only reconciliation; no order-creation method exists.
+Публичные потоки Binance USD-M разделены: обычные рыночные данные идут через `/market`,
+а book/depth — через `/public`. Подключённые портфели используют актуальный Futures
+`/private` и подписанный Spot WebSocket API. Приватные события запускают полную
+read-only сверку с debounce; методов создания ордеров в проекте нет.
 
 Run the opt-in live WebSocket check with `make smoke-ws`.
 Живую WebSocket-проверку можно запустить командой `make smoke-ws`.
@@ -113,9 +117,13 @@ Implemented / Реализовано:
 - dynamic trade/depth Stage B and OI polling;
 - debounced signal FSM and human-readable levels;
 - Telegram invite onboarding, top/status/portfolio, and persistent delivery queue;
+- real-time Spot/Futures private account monitoring with periodic REST reconciliation;
+- persistent portfolio alerts: match, opposite position, margin, PnL, and stale data;
+- `/binance`, `/portfolio`, `/positions`, `/history`, and `/stats` Telegram flows;
+- mobile Binance app bridge with a Web fallback;
 - PostgreSQL schema and Alembic migration;
 - AES-256-GCM credential vault and fail-closed read-only permission checks;
-- Spot/Futures portfolio reconciliation and JSONL replay;
+- Spot/Futures portfolio reconciliation, continuous JSONL replay, and 5/15/60m outcomes;
 - unit, security, FSM, storage, portfolio, and replay tests.
 
 Before production / Перед production: enter your secrets, configure the public DNS,

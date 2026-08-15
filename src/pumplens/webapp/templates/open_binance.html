@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Open Binance</title>
+    <link rel="stylesheet" href="/static/open_binance.css">
+  </head>
+  <body data-app-url="{{ app_url }}" data-web-url="{{ web_url }}">
+    <main>
+      <h1>{{ symbol }}</h1>
+      <p>Открываем Binance…</p>
+      <a class="primary" href="{{ app_url }}">Открыть приложение</a>
+      <a href="{{ web_url }}">Продолжить в браузере</a>
+    </main>
+    <script src="/static/open_binance.js" defer></script>
+  </body>
+</html>

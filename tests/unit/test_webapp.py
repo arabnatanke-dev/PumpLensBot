@@ -56,3 +56,22 @@ def test_connect_rejects_invalid_telegram_data_before_binance_call() -> None:
             },
         )
         assert response.status_code == 401
+
+
+def test_binance_mobile_bridge_has_app_and_web_fallback() -> None:
+    database = Database("sqlite+aiosqlite:///:memory:")
+    app = create_web_app(
+        runtime=RuntimeSecrets(_env_file=None),
+        database=database,
+        connect_sessions=ConnectSessionStore(),
+        service_state=ServiceState(),
+    )
+    with TestClient(app) as client:
+        response = client.get(
+            "/go/binance/BTCUSDT",
+            headers={"user-agent": "Mozilla/5.0 (Linux; Android 15)"},
+        )
+        assert response.status_code == 200
+        assert "package=com.binance.dev" in response.text
+        assert "https://www.binance.com/en/futures/BTCUSDT" in response.text
+        assert client.get("/go/binance/not-valid!").status_code == 404

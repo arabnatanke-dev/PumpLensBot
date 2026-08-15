@@ -7,6 +7,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
 from pumplens.config import AppSettings, RuntimeSecrets
+from pumplens.portfolio.service import PortfolioReconciler
 from pumplens.service_state import ServiceState
 from pumplens.storage.db import Database
 from pumplens.telegram.handlers import router
@@ -25,6 +26,7 @@ async def run_bot(
     runtime: RuntimeSecrets,
     connect_sessions: ConnectSessionStore,
     service_state: ServiceState,
+    portfolio_reconciler: PortfolioReconciler,
 ) -> None:
     dispatcher = Dispatcher()
     dispatcher.include_router(router)
@@ -35,4 +37,5 @@ async def run_bot(
         runtime=runtime,
         connect_sessions=connect_sessions,
         service_state=service_state,
+        portfolio_reconciler=portfolio_reconciler,
     )

@@ -1,0 +1,5 @@
+:root { color-scheme: dark; font-family: system-ui, sans-serif; }
+body { margin: 0; background: #0b0e11; color: #eaecef; }
+main { max-width: 28rem; margin: 15vh auto; padding: 2rem; text-align: center; }
+a { display: block; margin: 1rem 0; padding: .9rem; color: #f0b90b; }
+a.primary { border-radius: .6rem; background: #f0b90b; color: #181a20; text-decoration: none; font-weight: 700; }

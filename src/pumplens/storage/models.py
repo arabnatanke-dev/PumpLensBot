@@ -93,6 +93,9 @@ class SignalRecord(UUIDPrimaryKey, Timestamped, Base):
     late_line: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     candidate_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    early_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    early_price: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
+    early_liquidity_tier: Mapped[str | None] = mapped_column(String(24))
     watch_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     terminal_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -135,6 +138,24 @@ class SignalOutcomeRecord(UUIDPrimaryKey, Base):
     mfe: Mapped[float | None] = mapped_column(Numeric(8, 4))
     mae: Mapped[float | None] = mapped_column(Numeric(8, 4))
     hit_rule: Mapped[str | None] = mapped_column(String(32))
+    evaluated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class EarlyOutcomeRecord(UUIDPrimaryKey, Base):
+    __tablename__ = "early_outcomes"
+
+    signal_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("signals.id"),
+        nullable=False,
+        unique=True,
+    )
+    price_15s: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
+    price_30s: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
+    price_1m: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
+    price_3m: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
+    price_5m: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
+    mfe: Mapped[float | None] = mapped_column(Numeric(8, 4))
+    mae: Mapped[float | None] = mapped_column(Numeric(8, 4))
     evaluated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
@@ -312,6 +333,30 @@ class RiskAlertRecord(UUIDPrimaryKey, Timestamped, Base):
     retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     last_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error: Mapped[str | None] = mapped_column(String(128))
+
+
+class PositionRiskStateRecord(UUIDPrimaryKey, Timestamped, Base):
+    """Milestones reached in the current position lifetime. / Пороги текущей позиции."""
+
+    __tablename__ = "position_risk_states"
+    __table_args__ = (
+        UniqueConstraint(
+            "exchange_account_id",
+            "symbol",
+            "side",
+            name="uq_position_risk_state_account_symbol_side",
+        ),
+    )
+
+    exchange_account_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("exchange_accounts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    side: Mapped[str] = mapped_column(String(8), nullable=False)
+    max_profit_milestone: Mapped[float] = mapped_column(Numeric(8, 2), default=0)
+    max_loss_milestone: Mapped[float] = mapped_column(Numeric(8, 2), default=0)
+    last_roi_pct: Mapped[float] = mapped_column(Numeric(10, 4), default=0)
 
 
 class DeliveryRecord(UUIDPrimaryKey, Timestamped, Base):

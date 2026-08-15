@@ -21,8 +21,8 @@ from pumplens.binance.universe import UniverseManager
 from pumplens.binance.ws_deep import DeepMarketWebSocket
 from pumplens.binance.ws_market import MarketWebSocket
 from pumplens.config import AppSettings
-from pumplens.domain.events import KlineEvent, MarketEvent
-from pumplens.domain.models import Candidate
+from pumplens.domain.events import KlineEvent, MarketEvent, MarkPriceEvent
+from pumplens.domain.models import Candidate, MarkPrice
 from pumplens.replay.recorder import MarketEventRecorder
 from pumplens.service_state import ServiceState
 
@@ -38,6 +38,7 @@ async def run_scanner(
     service_state: ServiceState | None = None,
     transition_handler: Callable[[SignalTransition], Awaitable[None]] | None = None,
     record_path: Path | None = None,
+    mark_price_handler: Callable[[MarkPrice], None] | None = None,
 ) -> None:
     """Build public pipeline and run until cancelled. / Собирает публичный pipeline."""
 
@@ -77,7 +78,20 @@ async def run_scanner(
             if ticker is not None and buffer is not None:
                 buffer.ticker = ticker
 
-        recorder = MarketEventRecorder(record_path) if record_path is not None else None
+        recorder = (
+            MarketEventRecorder(
+                record_path,
+                queue_size=settings.replay.queue_size,
+                batch_size=settings.replay.batch_size,
+                flush_interval_seconds=settings.replay.flush_interval_seconds,
+                max_file_size_bytes=settings.replay.max_file_size_mb * 1024 * 1024,
+                retention_days=settings.replay.retention_days,
+                gzip_rotated=settings.replay.gzip_rotated,
+                record_book_ticker=settings.replay.record_book_ticker,
+            )
+            if record_path is not None
+            else None
+        )
         if recorder is not None:
             await recorder.open()
             for symbol in symbols:
@@ -91,6 +105,8 @@ async def run_scanner(
 
         async def market_handler(event: MarketEvent) -> None:
             await state.handle(event)
+            if isinstance(event, MarkPriceEvent) and mark_price_handler is not None:
+                mark_price_handler(event.value)
             if recorder is not None:
                 await recorder.record(event)
 
@@ -103,9 +119,14 @@ async def run_scanner(
                 settings.oi.poll_seconds * 2.5,
             ),
         )
-        stage_a = StageAScanner(feature_engine, settings.scanner, settings.late)
+        stage_a = StageAScanner(
+            feature_engine,
+            settings.scanner,
+            settings.late,
+            settings.early,
+        )
         stage_b = StageBManager(max_candidates=settings.scanner.max_deep_candidates)
-        signal_fsm = SignalFSM(state, settings.scanner, settings.late)
+        signal_fsm = SignalFSM(state, settings.scanner, settings.late, settings.early)
         market_ws = MarketWebSocket(
             settings.binance.websocket_base_url,
             symbols,

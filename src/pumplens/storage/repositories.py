@@ -53,6 +53,9 @@ class SignalRepository:
 
         signal.state = transition.to_state.value
         signal.score = transition.snapshot.score
+        if transition.to_state is SignalState.EARLY:
+            signal.early_price = _decimal(transition.snapshot.last_price)
+            signal.early_liquidity_tier = transition.liquidity_tier
         if transition.levels is not None:
             signal.start_price = _decimal(transition.levels.start_price)
             signal.trigger_price = _decimal(transition.levels.trigger_price)
@@ -86,6 +89,8 @@ class SignalRepository:
     def _apply_transition_time(signal: SignalRecord, transition: SignalTransition) -> None:
         if transition.to_state is SignalState.CANDIDATE:
             signal.candidate_at = transition.timestamp
+        elif transition.to_state is SignalState.EARLY:
+            signal.early_at = transition.timestamp
         elif transition.to_state is SignalState.WATCH:
             signal.watch_at = transition.timestamp
         elif transition.to_state is SignalState.CONFIRMED:

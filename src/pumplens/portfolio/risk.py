@@ -14,10 +14,12 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
 from sqlalchemy import select
 
+from pumplens.portfolio.live_marks import LiveMarkPriceStore
 from pumplens.storage.db import Database
 from pumplens.storage.models import (
     ExchangeAccountRecord,
     PositionRecord,
+    PositionRiskStateRecord,
     RiskAlertRecord,
     SignalRecord,
     SpotHoldingRecord,
@@ -50,12 +52,16 @@ class PortfolioRiskMonitor:
         stale_after_seconds: int = 600,
         liquidation_warning_pct: float = 5.0,
         pnl_milestones_pct: tuple[float, ...] = (5.0, 8.0, 10.0),
+        live_marks: LiveMarkPriceStore | None = None,
+        live_mark_stale_seconds: float = 5.0,
     ) -> None:
         self._database = database
         self._interval_seconds = interval_seconds
         self._stale_after_seconds = stale_after_seconds
         self._liquidation_warning_pct = liquidation_warning_pct
         self._pnl_milestones = tuple(sorted(pnl_milestones_pct))
+        self._live_marks = live_marks
+        self._live_mark_stale_seconds = live_mark_stale_seconds
 
     async def run(self) -> None:
         while True:
@@ -102,7 +108,7 @@ class PortfolioRiskMonitor:
     async def _conditions(self) -> list[RiskCondition]:
         now = datetime.now(UTC)
         result: list[RiskCondition] = []
-        async with self._database.session() as session:
+        async with self._database.session() as session, session.begin():
             accounts = (
                 await session.execute(
                     select(ExchangeAccountRecord, UserRecord)
@@ -118,6 +124,11 @@ class PortfolioRiskMonitor:
                     )
                 )
             )
+            risk_states = list(await session.scalars(select(PositionRiskStateRecord)))
+            risk_state_by_key = {
+                (row.exchange_account_id, row.symbol, row.side): row for row in risk_states
+            }
+            active_position_keys: set[tuple[uuid.UUID, str, str]] = set()
             for account, user in accounts:
                 positions = list(
                     await session.scalars(
@@ -133,9 +144,40 @@ class PortfolioRiskMonitor:
                         )
                     )
                 )
+                account_states: dict[tuple[str, str], PositionRiskStateRecord] = {}
+                for position in positions:
+                    key = (account.id, position.symbol, position.side)
+                    active_position_keys.add(key)
+                    state = risk_state_by_key.get(key)
+                    if state is None:
+                        state = PositionRiskStateRecord(
+                            exchange_account_id=account.id,
+                            symbol=position.symbol,
+                            side=position.side,
+                            max_profit_milestone=0,
+                            max_loss_milestone=0,
+                            last_roi_pct=0,
+                        )
+                        session.add(state)
+                        risk_state_by_key[key] = state
+                    account_states[(position.symbol, position.side)] = state
                 result.extend(
-                    self._account_conditions(account, user, positions, holdings, signals, now)
+                    self._account_conditions(
+                        account,
+                        user,
+                        positions,
+                        holdings,
+                        signals,
+                        account_states,
+                        now,
+                    )
                 )
+            # A missing position starts a new milestone lifetime on the next open.
+            # Отсутствующая позиция начинает новую жизнь порогов при следующем открытии.
+            for state in risk_states:
+                key = (state.exchange_account_id, state.symbol, state.side)
+                if key not in active_position_keys:
+                    await session.delete(state)
         return result
 
     def _account_conditions(
@@ -145,6 +187,7 @@ class PortfolioRiskMonitor:
         positions: list[PositionRecord],
         holdings: list[SpotHoldingRecord],
         signals: list[SignalRecord],
+        risk_states: dict[tuple[str, str], PositionRiskStateRecord],
         now: datetime,
     ) -> list[RiskCondition]:
         result: list[RiskCondition] = []
@@ -176,7 +219,12 @@ class PortfolioRiskMonitor:
             return result
 
         for position in positions:
-            distance = _liquidation_distance_pct(position)
+            mark = self._current_mark(position)
+            if mark is None:
+                # REST mark/PnL may be minutes old; silence is safer than a stale risk claim.
+                # REST mark/PnL могут быть старыми; лучше пропустить, чем дать ложный риск.
+                continue
+            distance = _liquidation_distance_pct(position, mark)
             if distance is not None and 0 <= distance <= self._liquidation_warning_pct:
                 result.append(
                     _condition(
@@ -190,8 +238,10 @@ class PortfolioRiskMonitor:
                         f"{position.side} x{position.leverage}.",
                     )
                 )
-            roi = _position_roi_pct(position)
-            milestone = _milestone(roi, self._pnl_milestones)
+            pnl = _unrealized_pnl(position, mark)
+            roi = _position_roi_pct(position, mark)
+            state = risk_states[(position.symbol, position.side)]
+            milestone = _advance_milestone(state, roi, self._pnl_milestones)
             if milestone is not None:
                 label = f"+{milestone:g}" if milestone > 0 else f"{milestone:g}"
                 result.append(
@@ -200,9 +250,10 @@ class PortfolioRiskMonitor:
                         user,
                         position.symbol,
                         "PNL_MILESTONE",
-                        f"pnl:{account.id}:{position.symbol}:{position.side}:{label}",
+                        f"pnl:{account.id}:{position.symbol}:{position.side}:"
+                        f"{'profit' if milestone > 0 else 'loss'}:{abs(milestone):g}",
                         f"💹 <b>PnL {label}%</b> — {html.escape(position.symbol)}\n"
-                        f"Текущая оценка ROI: {roi:+.2f}% · PnL {position.pnl:+.2f} USDT.",
+                        f"Текущая оценка ROI: {roi:+.2f}% · PnL {pnl:+.2f} USDT.",
                     )
                 )
 
@@ -240,6 +291,15 @@ class PortfolioRiskMonitor:
                     )
         return result
 
+    def _current_mark(self, position: PositionRecord) -> Decimal | None:
+        if self._live_marks is None:
+            return position.mark
+        mark = self._live_marks.get(
+            position.symbol,
+            max_age_seconds=self._live_mark_stale_seconds,
+        )
+        return mark.price if mark is not None else None
+
 
 class RiskAlertWorker:
     def __init__(self, database: Database, bot: Bot, public_base_url: str | None) -> None:
@@ -272,7 +332,9 @@ class RiskAlertWorker:
     async def _deliver(self, alert_id: uuid.UUID) -> None:
         async with self._database.session() as session:
             alert = await session.get(RiskAlertRecord, alert_id)
-            if alert is None:
+            # The monitor may resolve an alert after it was claimed but before delivery.
+            # Монитор мог снять алерт после claim, но до фактической отправки.
+            if alert is None or not alert.active or alert.status != "PROCESSING":
                 return
             chat_id = alert.chat_id
             message = alert.message
@@ -294,7 +356,7 @@ class RiskAlertWorker:
     async def _mark(self, alert_id: uuid.UUID, status: str, error: str | None) -> None:
         async with self._database.session() as session, session.begin():
             alert = await session.get(RiskAlertRecord, alert_id)
-            if alert is not None:
+            if alert is not None and alert.active and alert.status == "PROCESSING":
                 alert.status = status
                 alert.error = error
                 if status == "SENT":
@@ -303,7 +365,7 @@ class RiskAlertWorker:
     async def _retry(self, alert_id: uuid.UUID, error: str) -> None:
         async with self._database.session() as session, session.begin():
             alert = await session.get(RiskAlertRecord, alert_id)
-            if alert is not None:
+            if alert is not None and alert.active and alert.status == "PROCESSING":
                 alert.retry_count += 1
                 alert.error = error[:128]
                 alert.status = "PENDING" if alert.retry_count <= 5 else "FAILED"
@@ -326,26 +388,56 @@ def _aware(value: datetime | None) -> datetime | None:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
-def _liquidation_distance_pct(position: PositionRecord) -> float | None:
-    if position.liquidation is None or position.mark <= 0:
+def _liquidation_distance_pct(
+    position: PositionRecord,
+    mark: Decimal | None = None,
+) -> float | None:
+    current_mark = position.mark if mark is None else mark
+    if position.liquidation is None or current_mark <= 0:
         return None
     if position.side == "LONG":
-        return float((position.mark - position.liquidation) / position.mark * Decimal(100))
-    return float((position.liquidation - position.mark) / position.mark * Decimal(100))
+        return float((current_mark - position.liquidation) / current_mark * Decimal(100))
+    return float((position.liquidation - current_mark) / current_mark * Decimal(100))
 
 
-def _position_roi_pct(position: PositionRecord) -> float:
+def _position_roi_pct(position: PositionRecord, mark: Decimal | None = None) -> float:
     notional = abs(position.entry * position.amount)
     if notional <= 0 or position.leverage <= 0:
         return 0.0
     margin = notional / Decimal(position.leverage)
-    return float(position.pnl / margin * Decimal(100))
+    pnl = position.pnl if mark is None else _unrealized_pnl(position, mark)
+    return float(pnl / margin * Decimal(100))
+
+
+def _unrealized_pnl(position: PositionRecord, mark: Decimal) -> Decimal:
+    basis = position.break_even if position.break_even is not None else position.entry
+    return (mark - basis) * position.amount
 
 
 def _milestone(value: float, levels: tuple[float, ...]) -> float | None:
     sign = 1.0 if value >= 0 else -1.0
     reached = [level for level in levels if abs(value) >= level]
     return sign * max(reached) if reached else None
+
+
+def _advance_milestone(
+    state: PositionRiskStateRecord,
+    roi: float,
+    levels: tuple[float, ...],
+) -> float | None:
+    """Return only a new high-watermark crossing. / Возвращает только новый пересечённый порог."""
+
+    state.last_roi_pct = roi
+    reached = max((level for level in levels if abs(roi) >= level), default=None)
+    if reached is None:
+        return None
+    if roi >= 0 and reached > float(state.max_profit_milestone):
+        state.max_profit_milestone = reached
+        return reached
+    if roi < 0 and reached > float(state.max_loss_milestone):
+        state.max_loss_milestone = reached
+        return -reached
+    return None
 
 
 def _base_asset(symbol: str) -> str:

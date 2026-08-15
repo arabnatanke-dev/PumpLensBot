@@ -120,6 +120,8 @@ Implemented / Реализовано:
 - real-time Spot/Futures private account monitoring with periodic REST reconciliation;
 - persistent portfolio alerts: match, opposite position, margin, PnL, and stale data;
 - `/binance`, `/portfolio`, `/positions`, `/history`, and `/stats` Telegram flows;
+- EARLY anomaly radar with liquidity-aware activity floors, short rearm, shadow
+  persistence, replay outcomes, and `/early_stats`;
 - mobile Binance app bridge with a Web fallback;
 - PostgreSQL schema and Alembic migration;
 - AES-256-GCM credential vault and fail-closed read-only permission checks;
@@ -129,3 +131,11 @@ Implemented / Реализовано:
 Before production / Перед production: enter your secrets, configure the public DNS,
 run the migration, and collect 7–14 days of replay data to tune thresholds. Trading
 order creation is deliberately absent from the codebase.
+
+`early.shadow_mode: true` is the safe default: EARLY transitions and their full feature
+snapshots are stored, but Telegram deliveries are not created. Review 3–7 days through
+`/early_stats` and replay before enabling user notifications.
+
+`early.shadow_mode: true` — безопасное значение по умолчанию: переходы EARLY и полные
+feature snapshot сохраняются, но Telegram delivery не создаются. Перед включением
+уведомлений соберите 3–7 дней и проверьте `/early_stats` вместе с replay.

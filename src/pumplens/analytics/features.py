@@ -84,7 +84,14 @@ class FeatureEngine:
         return_5m = self._window_return(buffer, closed, last_price, 300)
         return_15m = self._window_return(buffer, closed, last_price, 900)
         acceleration = self._acceleration_1m(buffer, last_price)
-        volume_ratio, volume_z, trade_ratio, buy_pressure = self._flow_features(current, closed)
+        (
+            volume_ratio,
+            volume_z,
+            trade_ratio,
+            buy_pressure,
+            quote_volume_1m,
+            trade_count_1m,
+        ) = self._flow_features(current, closed)
 
         direction = Direction.LONG if return_1m >= 0 else Direction.SHORT
         book = buffer.book
@@ -136,6 +143,8 @@ class FeatureEngine:
             range_pct_1m=range_pct,
             candle_structure=structure,
             quote_volume_24h=quote_volume,
+            quote_volume_1m=quote_volume_1m,
+            trade_count_1m=trade_count_1m,
             agg_buy_pressure=agg_pressure,
             agg_trade_rate_ratio=agg_trade_ratio,
             depth_imbalance=depth_imbalance,
@@ -185,12 +194,12 @@ class FeatureEngine:
     def _flow_features(
         current: Kline | None,
         closed: Sequence[Kline],
-    ) -> tuple[float, float, float, float]:
+    ) -> tuple[float, float, float, float, float, int]:
         baseline = closed[-31:-1] if len(closed) >= 31 else closed[-30:]
         volumes = [bar.quote_volume for bar in baseline]
         trades = [float(bar.trade_count) for bar in baseline]
         if not volumes:
-            return 0.0, 0.0, 0.0, 0.5
+            return 0.0, 0.0, 0.0, 0.5, 0.0, 0
 
         if current is None:
             observed = closed[-1]
@@ -212,7 +221,14 @@ class FeatureEngine:
         current_trade_rate = observed.trade_count / elapsed_seconds
         trade_ratio = current_trade_rate / max(baseline_trade_rate, EPSILON)
         pressure = observed.taker_buy_quote_volume / max(observed.quote_volume, EPSILON)
-        return volume_ratio, volume_z, trade_ratio, min(max(pressure, 0.0), 1.0)
+        return (
+            volume_ratio,
+            volume_z,
+            trade_ratio,
+            min(max(pressure, 0.0), 1.0),
+            observed.quote_volume,
+            observed.trade_count,
+        )
 
     def _deep_features(
         self,

@@ -24,6 +24,44 @@ scanner:
   scan_interval_seconds: 1.0
   top_limit: 10
 
+# EARLY is a shadow radar until replay statistics justify user notifications.
+# EARLY работает как теневой радар до проверки статистики на replay.
+early:
+  enabled: true
+  shadow_mode: true
+  min_score: 58
+  max_score: 69.99
+  min_volume_ratio: 5
+  min_trade_rate_ratio: 5
+  min_pressure: 0.72
+  min_volume_z: 4
+  min_return_1m_pct: 0.15
+  max_return_1m_pct: 1.50
+  max_return_5m_pct: 4
+  max_spread_pct: 0.20
+  min_quote_volume_1m: 5000
+  min_trade_count_1m: 20
+  debounce_hits: 2
+  debounce_window_seconds: 3
+  invalidate_after_seconds: 12
+  pressure_reversal: 0.45
+  against_move_pct: 0.25
+  rearm_seconds: 60
+  outcome_poll_seconds: 5
+  liquidity_tiers:
+    - name: thin
+      min_quote_volume_24h: 2000000
+      min_quote_volume_1m: 5000
+      min_trade_count_1m: 20
+    - name: mid
+      min_quote_volume_24h: 25000000
+      min_quote_volume_1m: 15000
+      min_trade_count_1m: 40
+    - name: liquid
+      min_quote_volume_24h: 250000000
+      min_quote_volume_1m: 50000
+      min_trade_count_1m: 100
+
 late:
   return_5m_pct: 8.0
   return_15m_pct: 15.0
@@ -45,12 +83,22 @@ portfolio:
   event_reconcile_debounce_seconds: 1
   stale_after_seconds: 600
   risk_scan_seconds: 5
+  live_mark_stale_seconds: 5
   liquidation_warning_pct: 5
   pnl_milestones_pct: [5, 8, 10, 15, 20]
 
 replay:
   enabled: true
   record_path: data/market.jsonl
+  queue_size: 50000
+  batch_size: 500
+  flush_interval_seconds: 0.5
+  max_file_size_mb: 200
+  retention_days: 10
+  gzip_rotated: true
+  # bookTicker is intentionally omitted: replay uses ticker/trades/klines and the live scanner keeps it.
+  # bookTicker намеренно не пишется: replay использует ticker/trades/klines, а live scanner его хранит.
+  record_book_ticker: false
 
 notifications:
   edit_debounce_seconds: 4

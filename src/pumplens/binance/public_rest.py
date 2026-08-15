@@ -153,6 +153,16 @@ class BinancePublicClient:
             timestamp_ms=int(payload["time"]),
         )
 
+    async def ticker_price(self, symbol: str) -> float:
+        payload = await self._get(
+            "/fapi/v2/ticker/price",
+            params={"symbol": symbol},
+            weight=1,
+        )
+        if not isinstance(payload, Mapping) or "price" not in payload:
+            raise BinancePublicError("ticker price response is invalid")
+        return float(payload["price"])
+
     @staticmethod
     def _parse_symbol(row: Mapping[str, Any]) -> SymbolSpec:
         filters = tuple(row.get("filters", ()))

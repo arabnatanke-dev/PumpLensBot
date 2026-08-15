@@ -68,6 +68,70 @@ class ScannerSettings(StrictModel):
         return self
 
 
+class EarlyLiquidityTier(StrictModel):
+    name: str
+    min_quote_volume_24h: float = Field(ge=0.0)
+    min_quote_volume_1m: PositiveFloat
+    min_trade_count_1m: PositiveInt
+
+
+class EarlySettings(StrictModel):
+    enabled: bool = True
+    shadow_mode: bool = True
+    min_score: float = Field(default=58.0, ge=0.0, le=100.0)
+    max_score: float = Field(default=69.99, ge=0.0, le=100.0)
+    min_volume_ratio: PositiveFloat = 5.0
+    min_trade_rate_ratio: PositiveFloat = 5.0
+    min_pressure: float = Field(default=0.72, ge=0.5, le=1.0)
+    min_volume_z: float = Field(default=4.0, ge=0.0)
+    min_return_1m_pct: PositiveFloat = 0.15
+    max_return_1m_pct: PositiveFloat = 1.50
+    max_return_5m_pct: PositiveFloat = 4.0
+    max_spread_pct: PositiveFloat = 0.20
+    min_quote_volume_1m: PositiveFloat = 5_000.0
+    min_trade_count_1m: PositiveInt = 20
+    debounce_hits: PositiveInt = 2
+    debounce_window_seconds: PositiveInt = 3
+    invalidate_after_seconds: PositiveInt = 12
+    pressure_reversal: float = Field(default=0.45, ge=0.0, le=0.5)
+    against_move_pct: PositiveFloat = 0.25
+    rearm_seconds: PositiveInt = 60
+    outcome_poll_seconds: PositiveFloat = 5.0
+    liquidity_tiers: tuple[EarlyLiquidityTier, ...] = (
+        EarlyLiquidityTier(
+            name="thin",
+            min_quote_volume_24h=2_000_000,
+            min_quote_volume_1m=5_000,
+            min_trade_count_1m=20,
+        ),
+        EarlyLiquidityTier(
+            name="mid",
+            min_quote_volume_24h=25_000_000,
+            min_quote_volume_1m=15_000,
+            min_trade_count_1m=40,
+        ),
+        EarlyLiquidityTier(
+            name="liquid",
+            min_quote_volume_24h=250_000_000,
+            min_quote_volume_1m=50_000,
+            min_trade_count_1m=100,
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_early_thresholds(self) -> EarlySettings:
+        if self.min_score >= self.max_score:
+            raise ValueError("early min_score must be lower than max_score")
+        if self.min_return_1m_pct >= self.max_return_1m_pct:
+            raise ValueError("early min_return_1m_pct must be lower than max_return_1m_pct")
+        if self.debounce_hits > self.debounce_window_seconds:
+            raise ValueError("early debounce_hits must not exceed debounce_window_seconds")
+        tier_starts = [tier.min_quote_volume_24h for tier in self.liquidity_tiers]
+        if tier_starts != sorted(tier_starts) or len(set(tier_starts)) != len(tier_starts):
+            raise ValueError("early liquidity_tiers must have unique ascending 24h thresholds")
+        return self
+
+
 class LateSettings(StrictModel):
     return_5m_pct: PositiveFloat = 8.0
     return_15m_pct: PositiveFloat = 15.0
@@ -92,6 +156,7 @@ class PortfolioSettings(StrictModel):
     event_reconcile_debounce_seconds: PositiveFloat = 1.0
     stale_after_seconds: PositiveInt = 600
     risk_scan_seconds: PositiveFloat = 5.0
+    live_mark_stale_seconds: PositiveFloat = 5.0
     liquidation_warning_pct: PositiveFloat = 5.0
     pnl_milestones_pct: tuple[PositiveFloat, ...] = (5.0, 8.0, 10.0, 15.0, 20.0)
 
@@ -99,6 +164,13 @@ class PortfolioSettings(StrictModel):
 class ReplaySettings(StrictModel):
     enabled: bool = True
     record_path: str = "data/market.jsonl"
+    queue_size: PositiveInt = 50_000
+    batch_size: PositiveInt = 500
+    flush_interval_seconds: PositiveFloat = 0.5
+    max_file_size_mb: PositiveInt = 200
+    retention_days: PositiveInt = 10
+    gzip_rotated: bool = True
+    record_book_ticker: bool = False
 
 
 class NotificationSettings(StrictModel):
@@ -110,6 +182,7 @@ class NotificationSettings(StrictModel):
 class AppSettings(StrictModel):
     binance: BinanceSettings = BinanceSettings()
     scanner: ScannerSettings = ScannerSettings()
+    early: EarlySettings = EarlySettings()
     late: LateSettings = LateSettings()
     oi: OpenInterestSettings = OpenInterestSettings()
     onboarding: OnboardingSettings = OnboardingSettings()

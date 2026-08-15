@@ -1,5 +1,6 @@
 """Recorder/replay determinism tests. / Тесты детерминированности replay."""
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -7,7 +8,7 @@ import pytest
 from pumplens.domain.enums import Direction
 from pumplens.domain.events import BookTickerEvent, KlineEvent
 from pumplens.domain.models import BookTicker, Kline
-from pumplens.replay.outcomes import evaluate_outcome
+from pumplens.replay.outcomes import evaluate_kline_outcome, evaluate_outcome
 from pumplens.replay.reader import ReplayReader
 from pumplens.replay.recorder import MarketEventRecorder
 
@@ -26,6 +27,17 @@ def test_outcome_hit_order(
 ) -> None:
     outcome = evaluate_outcome(direction, 100, prices)
     assert outcome.hit_rule == expected
+
+
+def test_kline_outcome_uses_high_low_and_marks_ambiguous_order() -> None:
+    target_only = Kline("BTCUSDT", 0, 1, 100, 102.5, 99.5, 100, 1, 1, 1, 1)
+    result = evaluate_kline_outcome(Direction.LONG, 100, [target_only])
+    assert result.hit_rule == "TARGET_FIRST"
+    assert result.mfe_pct == pytest.approx(2.5)
+    assert result.mae_pct == pytest.approx(-0.5)
+
+    both = Kline("BTCUSDT", 0, 1, 100, 103, 98, 100, 1, 1, 1, 1)
+    assert evaluate_kline_outcome(Direction.LONG, 100, [both]).hit_rule == "AMBIGUOUS"
 
 
 async def test_same_recording_replays_identically(tmp_path: Path) -> None:
@@ -75,3 +87,40 @@ async def test_same_recording_replays_identically(tmp_path: Path) -> None:
 
     assert await collect() == await collect()
     assert len(ReplayReader(path).sha256()) == 64
+
+
+async def test_recorder_can_skip_book_ticker_and_rotate(tmp_path: Path) -> None:
+    path = tmp_path / "market.jsonl"
+    recorder = MarketEventRecorder(
+        path,
+        batch_size=1,
+        max_file_size_bytes=150,
+        gzip_rotated=True,
+        record_book_ticker=False,
+    )
+    await recorder.open()
+    await recorder.record(
+        BookTickerEvent(BookTicker("BTCUSDT", 100, 1, 101, 1, 1))
+    )
+    for offset in range(3):
+        await recorder.record(
+            KlineEvent(
+                Kline(
+                    "BTCUSDT",
+                    offset,
+                    offset + 1,
+                    100,
+                    101,
+                    99,
+                    100,
+                    1,
+                    100,
+                    10,
+                    60,
+                )
+            )
+        )
+    await recorder.close()
+    rotated = await asyncio.to_thread(lambda: list(tmp_path.glob("market-*.jsonl.gz")))
+    assert rotated
+    assert "BookTickerEvent" not in path.read_text()

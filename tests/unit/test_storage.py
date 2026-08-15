@@ -115,6 +115,7 @@ def test_schema_contains_all_mvp_tables() -> None:
         "signal_features",
         "signal_events",
         "signal_outcomes",
+        "early_outcomes",
         "users",
         "user_consents",
         "user_preferences",

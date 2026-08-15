@@ -9,7 +9,7 @@ import structlog
 
 from pumplens.analytics.buffers import MarketState
 from pumplens.analytics.levels import SignalLevels, calculate_levels
-from pumplens.config import LateSettings, ScannerSettings
+from pumplens.config import EarlySettings, LateSettings, ScannerSettings
 from pumplens.domain.enums import DataQuality, Direction, SignalState
 from pumplens.domain.models import Candidate, FeatureSnapshot
 
@@ -29,6 +29,9 @@ class SignalLifecycle:
     weak_since: datetime | None = None
     confirmed_at: datetime | None = None
     cooldown_until: datetime | None = None
+    early_weak_since: datetime | None = None
+    early_liquidity_tier: str | None = None
+    short_rearm: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +45,7 @@ class SignalTransition:
     timestamp: datetime
     snapshot: FeatureSnapshot
     levels: SignalLevels | None
+    liquidity_tier: str | None = None
 
 
 class SignalFSM:
@@ -50,10 +54,12 @@ class SignalFSM:
         state: MarketState,
         scanner_settings: ScannerSettings,
         late_settings: LateSettings,
+        early_settings: EarlySettings | None = None,
     ) -> None:
         self._market_state = state
         self._settings = scanner_settings
         self._late = late_settings
+        self._early = early_settings or EarlySettings()
         self._lifecycles: dict[tuple[str, Direction], SignalLifecycle] = {}
 
     def lifecycle(self, symbol: str, direction: Direction) -> SignalLifecycle:
@@ -78,9 +84,18 @@ class SignalFSM:
             lifecycle.confirmed_score_since = None
             if lifecycle.state in {
                 SignalState.CANDIDATE,
+                SignalState.EARLY,
                 SignalState.WATCH,
                 SignalState.CONFIRMED,
             }:
+                if lifecycle.state is SignalState.EARLY:
+                    return self._close_early(
+                        lifecycle,
+                        SignalState.INVALIDATED,
+                        "DATA_STALE",
+                        now,
+                        snapshot,
+                    )
                 return self._transition(
                     lifecycle,
                     SignalState.INVALIDATED,
@@ -97,6 +112,14 @@ class SignalFSM:
             SignalState.COOLDOWN,
             SignalState.TOO_LATE,
         }:
+            if lifecycle.state is SignalState.EARLY:
+                return self._close_early(
+                    lifecycle,
+                    SignalState.TOO_LATE,
+                    "TOO_LATE",
+                    now,
+                    snapshot,
+                )
             return self._transition(lifecycle, SignalState.TOO_LATE, "TOO_LATE", now, snapshot)
 
         if lifecycle.state is SignalState.NORMAL:
@@ -112,6 +135,16 @@ class SignalFSM:
             return None
 
         if lifecycle.state is SignalState.CANDIDATE:
+            if candidate.early_selected and candidate.hard_reject_reason is None:
+                early_snapshot = candidate.early_snapshot or snapshot
+                lifecycle.early_liquidity_tier = candidate.early_liquidity_tier
+                return self._transition(
+                    lifecycle,
+                    SignalState.EARLY,
+                    "EARLY_FLASH_DEBOUNCED",
+                    now,
+                    early_snapshot,
+                )
             if (
                 self._watch_confirmations(candidate)
                 and snapshot.score >= self._settings.watch_score
@@ -123,6 +156,45 @@ class SignalFSM:
                     lifecycle,
                     SignalState.WATCH,
                     "WATCH_THRESHOLD",
+                    now,
+                    snapshot,
+                )
+            return None
+
+        if lifecycle.state is SignalState.EARLY:
+            if self._early_limit_crossed(snapshot):
+                return self._close_early(
+                    lifecycle,
+                    SignalState.TOO_LATE,
+                    "EARLY_LIMIT_CROSSED",
+                    now,
+                    snapshot,
+                )
+            if (
+                self._watch_confirmations(candidate)
+                and snapshot.score >= self._settings.watch_score
+                and snapshot.deep_data_ready
+            ):
+                lifecycle.trigger_price = snapshot.last_price
+                lifecycle.levels = self._calculate_levels(lifecycle, snapshot)
+                lifecycle.short_rearm = False
+                return self._transition(
+                    lifecycle,
+                    SignalState.WATCH,
+                    "WATCH_THRESHOLD",
+                    now,
+                    snapshot,
+                )
+            invalidation_reason = self._early_invalidation_reason(
+                lifecycle,
+                candidate,
+                now,
+            )
+            if invalidation_reason is not None:
+                return self._close_early(
+                    lifecycle,
+                    SignalState.INVALIDATED,
+                    invalidation_reason,
                     now,
                     snapshot,
                 )
@@ -167,7 +239,8 @@ class SignalFSM:
             return None
 
         if lifecycle.state in {SignalState.INVALIDATED, SignalState.TOO_LATE}:
-            lifecycle.cooldown_until = now + timedelta(minutes=self._settings.cooldown_minutes)
+            if lifecycle.cooldown_until is None:
+                lifecycle.cooldown_until = now + timedelta(minutes=self._settings.cooldown_minutes)
             return self._transition(
                 lifecycle,
                 SignalState.COOLDOWN,
@@ -202,18 +275,27 @@ class SignalFSM:
         lifecycle = self._lifecycles.get((snapshot.symbol, opposite))
         if lifecycle is None or lifecycle.state not in {
             SignalState.CANDIDATE,
+            SignalState.EARLY,
             SignalState.WATCH,
             SignalState.CONFIRMED,
         }:
             return None
-        lifecycle.cooldown_until = now + timedelta(minutes=self._settings.cooldown_minutes)
+        if lifecycle.state is SignalState.EARLY:
+            lifecycle.cooldown_until = now + timedelta(seconds=self._early.rearm_seconds)
+            lifecycle.short_rearm = True
+            target = SignalState.INVALIDATED
+            reason = "EARLY_DIRECTION_FLIP"
+        else:
+            lifecycle.cooldown_until = now + timedelta(minutes=self._settings.cooldown_minutes)
+            target = SignalState.COOLDOWN
+            reason = "DIRECTION_FLIP"
         # Persist the old direction consistently even though the new snapshot flipped.
         # Сохраняем старое направление, хотя новый snapshot уже развернулся.
         opposite_snapshot = replace(snapshot, direction=opposite)
         return self._transition(
             lifecycle,
-            SignalState.COOLDOWN,
-            "DIRECTION_FLIP",
+            target,
+            reason,
             now,
             opposite_snapshot,
         )
@@ -241,6 +323,58 @@ class SignalFSM:
             recent,
             self._late,
         )
+
+    def _early_limit_crossed(self, snapshot: FeatureSnapshot) -> bool:
+        return (
+            abs(snapshot.return_1m) > self._early.max_return_1m_pct
+            or abs(snapshot.return_5m) >= self._early.max_return_5m_pct
+        )
+
+    def _early_invalidation_reason(
+        self,
+        lifecycle: SignalLifecycle,
+        candidate: Candidate,
+        now: datetime,
+    ) -> str | None:
+        snapshot = candidate.snapshot
+        pressure = (
+            snapshot.buy_pressure
+            if snapshot.direction is Direction.LONG
+            else 1.0 - snapshot.buy_pressure
+        )
+        if pressure <= self._early.pressure_reversal:
+            return "EARLY_PRESSURE_REVERSED"
+        if snapshot.spread_pct > self._early.max_spread_pct:
+            return "EARLY_SPREAD_WIDE"
+        start_price = lifecycle.start_price or snapshot.last_price
+        signed_move = (
+            (snapshot.last_price / start_price - 1.0)
+            * 100.0
+            * (1.0 if snapshot.direction is Direction.LONG else -1.0)
+        )
+        if signed_move <= -self._early.against_move_pct:
+            return "EARLY_PRICE_REVERSED"
+        if candidate.early_selected:
+            lifecycle.early_weak_since = None
+            return None
+        lifecycle.early_weak_since = lifecycle.early_weak_since or now
+        if now - lifecycle.early_weak_since >= timedelta(
+            seconds=self._early.invalidate_after_seconds
+        ):
+            return "EARLY_WEAK"
+        return None
+
+    def _close_early(
+        self,
+        lifecycle: SignalLifecycle,
+        target: SignalState,
+        reason: str,
+        now: datetime,
+        snapshot: FeatureSnapshot,
+    ) -> SignalTransition:
+        lifecycle.cooldown_until = now + timedelta(seconds=self._early.rearm_seconds)
+        lifecycle.short_rearm = True
+        return self._transition(lifecycle, target, reason, now, snapshot)
 
     @staticmethod
     def _invalidation_reason(
@@ -308,6 +442,9 @@ class SignalFSM:
         lifecycle.confirmed_score_since = None
         lifecycle.weak_since = None
         lifecycle.confirmed_at = None
+        lifecycle.early_weak_since = None
+        lifecycle.early_liquidity_tier = None
+        lifecycle.short_rearm = False
         lifecycle.cooldown_until = None
 
     @staticmethod
@@ -331,6 +468,7 @@ class SignalFSM:
             timestamp=now,
             snapshot=snapshot,
             levels=lifecycle.levels,
+            liquidity_tier=lifecycle.early_liquidity_tier,
         )
         log.info(
             "signal_transition",

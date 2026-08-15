@@ -12,6 +12,8 @@ def test_repository_settings_are_valid() -> None:
     root = Path(__file__).parents[2]
     settings = load_settings(root / "settings.yaml")
     assert settings.scanner.candidate_score == 55
+    assert settings.early.shadow_mode is True
+    assert settings.early.debounce_hits == 2
     assert settings.binance.websocket_streams_per_connection <= 900
 
 

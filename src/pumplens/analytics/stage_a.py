@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
+from datetime import datetime, timedelta
 
 from pumplens.analytics.features import FeatureEngine
 from pumplens.analytics.scoring import score_stage_a
-from pumplens.config import LateSettings, ScannerSettings
+from pumplens.config import EarlyLiquidityTier, EarlySettings, LateSettings, ScannerSettings
 from pumplens.domain.enums import DataQuality, Direction
 from pumplens.domain.models import Candidate, FeatureSnapshot
 
@@ -17,11 +18,14 @@ class StageAScanner:
         feature_engine: FeatureEngine,
         settings: ScannerSettings,
         late: LateSettings,
+        early: EarlySettings | None = None,
     ) -> None:
         self._feature_engine = feature_engine
         self._settings = settings
         self._late = late
+        self._early = early or EarlySettings()
         self._hits: dict[str, deque[bool]] = defaultdict(lambda: deque(maxlen=3))
+        self._early_hits: dict[str, deque[tuple[datetime, bool]]] = defaultdict(deque)
 
     def scan_once(self) -> list[Candidate]:
         snapshots = [
@@ -59,12 +63,30 @@ class StageAScanner:
         history = self._hits[snapshot.symbol]
         history.append(current_hit)
         selected = current_hit and sum(history) >= 2
+        early_hit, liquidity_tier = evaluate_early(
+            snapshot,
+            hard_reject,
+            self._settings,
+            self._early,
+        )
+        early_selected = self._early_debounced(snapshot, early_hit)
         return Candidate(
             snapshot=snapshot,
             selected=selected,
             hard_reject_reason=hard_reject,
             confirmations=tuple(confirmations),
+            early_selected=early_selected,
+            early_liquidity_tier=liquidity_tier if early_selected else None,
+            early_snapshot=snapshot if early_selected else None,
         )
+
+    def _early_debounced(self, snapshot: FeatureSnapshot, current_hit: bool) -> bool:
+        history = self._early_hits[snapshot.symbol]
+        cutoff = snapshot.timestamp - timedelta(seconds=self._early.debounce_window_seconds)
+        while history and history[0][0] <= cutoff:
+            history.popleft()
+        history.append((snapshot.timestamp, current_hit))
+        return current_hit and sum(hit for _, hit in history) >= self._early.debounce_hits
 
     def _hard_reject(self, snapshot: FeatureSnapshot) -> str | None:
         if snapshot.data_quality is not DataQuality.FRESH:
@@ -80,3 +102,46 @@ class StageAScanner:
         ):
             return "too_late"
         return None
+
+
+def evaluate_early(
+    snapshot: FeatureSnapshot,
+    hard_reject: str | None,
+    scanner: ScannerSettings,
+    early: EarlySettings,
+) -> tuple[bool, str | None]:
+    """Evaluate the strict flash gate before deep confirmation. / Проверяет ранний flash-gate."""
+
+    tier = _liquidity_tier(snapshot.quote_volume_24h, early.liquidity_tiers)
+    if not early.enabled or hard_reject is not None or tier is None:
+        return False, None
+    pressure = (
+        snapshot.buy_pressure
+        if snapshot.direction is Direction.LONG
+        else 1.0 - snapshot.buy_pressure
+    )
+    quote_floor = max(early.min_quote_volume_1m, tier.min_quote_volume_1m)
+    trade_floor = max(early.min_trade_count_1m, tier.min_trade_count_1m)
+    one_minute_move = abs(snapshot.return_1m)
+    return (
+        snapshot.data_quality is DataQuality.FRESH
+        and early.min_score <= snapshot.score <= early.max_score
+        and snapshot.volume_ratio_1m >= early.min_volume_ratio
+        and snapshot.trade_rate_ratio >= early.min_trade_rate_ratio
+        and pressure >= early.min_pressure
+        and snapshot.volume_robust_z >= early.min_volume_z
+        and early.min_return_1m_pct <= one_minute_move <= early.max_return_1m_pct
+        and abs(snapshot.return_5m) < early.max_return_5m_pct
+        and snapshot.spread_pct <= min(scanner.max_spread_pct, early.max_spread_pct)
+        and snapshot.quote_volume_1m >= quote_floor
+        and snapshot.trade_count_1m >= trade_floor,
+        tier.name,
+    )
+
+
+def _liquidity_tier(
+    quote_volume_24h: float,
+    tiers: tuple[EarlyLiquidityTier, ...],
+) -> EarlyLiquidityTier | None:
+    eligible = [tier for tier in tiers if quote_volume_24h >= tier.min_quote_volume_24h]
+    return eligible[-1] if eligible else None

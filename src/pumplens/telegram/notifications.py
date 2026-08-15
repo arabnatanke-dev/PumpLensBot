@@ -33,16 +33,26 @@ log = structlog.get_logger(__name__)
 class TransitionFanout:
     """Persist, then enqueue per-user delivery. / Сохраняет и ставит в очередь."""
 
-    def __init__(self, database: Database) -> None:
+    def __init__(self, database: Database, *, early_shadow_mode: bool = True) -> None:
         self._database = database
+        self._early_shadow_mode = early_shadow_mode
 
     async def __call__(self, transition: SignalTransition) -> None:
         async with self._database.session() as session, session.begin():
             signal_id = await SignalRepository(session).persist_transition(transition)
-            if transition.to_state is SignalState.CANDIDATE:
+            if transition.to_state in {SignalState.NORMAL, SignalState.CANDIDATE}:
                 return
-            if transition.to_state is SignalState.WATCH:
-                recipients = await self._watch_recipients(session, transition)
+            action = "EDIT"
+            if transition.to_state is SignalState.EARLY:
+                if self._early_shadow_mode:
+                    return
+                recipients = await self._early_recipients(session, transition)
+                action = "SEND"
+            elif transition.to_state is SignalState.WATCH:
+                recipients = await self._existing_recipients(session, signal_id)
+                if not recipients:
+                    recipients = await self._watch_recipients(session, transition)
+                    action = "SEND"
             else:
                 recipients = await self._existing_recipients(session, signal_id)
             for user in recipients:
@@ -60,26 +70,50 @@ class TransitionFanout:
                             user_id=user.id,
                             chat_id=user.chat_id,
                             stage=transition.to_state.value,
-                            action="SEND"
-                            if transition.to_state is SignalState.WATCH
-                            else "EDIT",
+                            action=action,
                             status="PENDING",
                         )
                     )
+
+    @staticmethod
+    async def _early_recipients(
+        session: AsyncSession,
+        transition: SignalTransition,
+    ) -> list[UserRecord]:
+        return await TransitionFanout._eligible_recipients(
+            session,
+            transition,
+            apply_min_score=False,
+        )
 
     @staticmethod
     async def _watch_recipients(
         session: AsyncSession,
         transition: SignalTransition,
     ) -> list[UserRecord]:
+        return await TransitionFanout._eligible_recipients(
+            session,
+            transition,
+            apply_min_score=True,
+        )
+
+    @staticmethod
+    async def _eligible_recipients(
+        session: AsyncSession,
+        transition: SignalTransition,
+        *,
+        apply_min_score: bool,
+    ) -> list[UserRecord]:
+        filters = [
+            UserRecord.status == "ACTIVE",
+            UserPreferenceRecord.paused.is_(False),
+        ]
+        if apply_min_score:
+            filters.append(UserPreferenceRecord.min_score <= transition.snapshot.score)
         statement = (
             select(UserRecord, UserPreferenceRecord)
             .join(UserPreferenceRecord, UserPreferenceRecord.user_id == UserRecord.id)
-            .where(
-                UserRecord.status == "ACTIVE",
-                UserPreferenceRecord.paused.is_(False),
-                UserPreferenceRecord.min_score <= transition.snapshot.score,
-            )
+            .where(*filters)
         )
         rows = (await session.execute(statement)).all()
         return [
@@ -98,12 +132,11 @@ class TransitionFanout:
             .join(DeliveryRecord, DeliveryRecord.user_id == UserRecord.id)
             .where(
                 DeliveryRecord.signal_id == signal_id,
-                DeliveryRecord.stage == SignalState.WATCH.value,
+                DeliveryRecord.stage.in_([SignalState.EARLY.value, SignalState.WATCH.value]),
             )
             .distinct()
         )
         return list(await session.scalars(statement))
-
 
 class DeliveryWorker:
     def __init__(
@@ -156,7 +189,7 @@ class DeliveryWorker:
             )
             text = format_signal(signal, feature.features_json if feature else {})
             keyboard = signal_keyboard(signal.symbol, self._public_base_url)
-            target_message_id = await self._watch_message_id(session, job)
+            target_message_id = await self._signal_message_id(session, job)
 
         await self._respect_chat_rate(job.chat_id)
         try:
@@ -185,7 +218,7 @@ class DeliveryWorker:
             log.warning("telegram_delivery_failed", job_id=str(job_id), error=type(exc).__name__)
             await self._retry(job_id, type(exc).__name__)
 
-    async def _watch_message_id(
+    async def _signal_message_id(
         self,
         session: AsyncSession,
         job: DeliveryRecord,
@@ -196,9 +229,11 @@ class DeliveryWorker:
             select(DeliveryRecord.message_id).where(
                 DeliveryRecord.signal_id == job.signal_id,
                 DeliveryRecord.user_id == job.user_id,
-                DeliveryRecord.stage == SignalState.WATCH.value,
+                DeliveryRecord.stage.in_([SignalState.EARLY.value, SignalState.WATCH.value]),
                 DeliveryRecord.status == "SENT",
             )
+            .order_by(DeliveryRecord.created_at)
+            .limit(1)
         )
 
     async def _respect_chat_rate(self, chat_id: int) -> None:
@@ -235,6 +270,7 @@ class DeliveryWorker:
 def format_signal(signal: SignalRecord, features: dict[str, Any]) -> str:
     direction_icon = "📈" if signal.direction == "LONG" else "📉"
     state_icons = {
+        "EARLY": "⚡",
         "WATCH": "🟡",
         "CONFIRMED": "🟢",
         "INVALIDATED": "🔴",
@@ -245,6 +281,20 @@ def format_signal(signal: SignalRecord, features: dict[str, Any]) -> str:
     price = features.get("last_price", signal.trigger_price or signal.start_price or 0)
     reasons = features.get("reasons", [])
     reason_text = ", ".join(str(value) for value in reasons[:4]) or "сбор подтверждений"
+    if signal.state == SignalState.EARLY.value:
+        directional_pressure = features.get("buy_pressure", 0.5)
+        if signal.direction == "SHORT":
+            directional_pressure = 1.0 - float(directional_pressure)
+        return (
+            f"⚡ <b>EARLY {signal.direction}</b> — <b>{html.escape(signal.symbol)}</b>\n\n"
+            f"Цена: {float(features.get('return_1m', 0)):+.2f}% за минуту\n"
+            f"Volume: {float(features.get('volume_ratio_1m', 0)):.1f}x\n"
+            f"Trades: {float(features.get('trade_rate_ratio', 0)):.1f}x\n"
+            f"Pressure: {float(directional_pressure):.0%}\n"
+            f"Score: {float(signal.score):.0f}\n\n"
+            "Очень ранняя аномалия. Подтверждения пока нет. "
+            "Высокий риск ложного сигнала."
+        )
     return (
         f"{icon} <b>{html.escape(signal.state)} {signal.direction}</b> — "
         f"<b>{html.escape(signal.symbol)}</b> {direction_icon}\n"

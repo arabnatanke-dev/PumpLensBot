@@ -12,9 +12,10 @@ from sqlalchemy import or_, select
 from pumplens.binance.public_rest import BinancePublicClient
 from pumplens.domain.enums import Direction
 from pumplens.domain.models import Kline
-from pumplens.replay.outcomes import evaluate_outcome
+from pumplens.replay.early_outcomes import directional_move_pct
+from pumplens.replay.outcomes import evaluate_kline_outcome
 from pumplens.storage.db import Database
-from pumplens.storage.models import SignalOutcomeRecord, SignalRecord
+from pumplens.storage.models import EarlyOutcomeRecord, SignalOutcomeRecord, SignalRecord
 
 log = structlog.get_logger(__name__)
 
@@ -88,10 +89,10 @@ class SignalOutcomeEvaluator:
         if not closed:
             return
         direction = Direction(signal.direction)
-        result = evaluate_outcome(
+        result = evaluate_kline_outcome(
             direction,
             float(signal.trigger_price),
-            [item.close for item in closed],
+            closed,
         )
         prices = {
             minutes: _price_at(closed, started + timedelta(minutes=minutes))
@@ -118,6 +119,92 @@ class SignalOutcomeEvaluator:
                 row.evaluated_at = now
 
 
+class EarlyOutcomeEvaluator:
+    """Sample short EARLY horizons while replay stores the raw feed. / Снимает короткие точки."""
+
+    def __init__(
+        self,
+        database: Database,
+        rest_base_url: str,
+        *,
+        interval_seconds: float = 5.0,
+    ) -> None:
+        self._database = database
+        self._rest_base_url = rest_base_url
+        self._interval_seconds = interval_seconds
+
+    async def run(self) -> None:
+        async with BinancePublicClient(self._rest_base_url) as client:
+            while True:
+                try:
+                    await self.evaluate_once(client)
+                except Exception as exc:
+                    log.warning("early_outcome_evaluation_failed", error=type(exc).__name__)
+                await asyncio.sleep(self._interval_seconds)
+
+    async def evaluate_once(self, client: BinancePublicClient) -> None:
+        now = datetime.now(UTC)
+        async with self._database.session() as session:
+            signals = list(
+                await session.scalars(
+                    select(SignalRecord)
+                    .outerjoin(
+                        EarlyOutcomeRecord,
+                        EarlyOutcomeRecord.signal_id == SignalRecord.id,
+                    )
+                    .where(
+                        SignalRecord.early_at.is_not(None),
+                        SignalRecord.early_price.is_not(None),
+                        SignalRecord.early_at >= now - timedelta(seconds=330),
+                        or_(
+                            EarlyOutcomeRecord.id.is_(None),
+                            EarlyOutcomeRecord.evaluated_at.is_(None),
+                        ),
+                    )
+                    .order_by(SignalRecord.early_at)
+                    .limit(50)
+                )
+            )
+        for signal in signals:
+            started = _aware(signal.early_at)
+            if started is None or signal.early_price is None:
+                continue
+            elapsed = (now - started).total_seconds()
+            if elapsed < 0:
+                continue
+            price = await client.ticker_price(signal.symbol)
+            await self._store_sample(signal, elapsed, price, now)
+
+    async def _store_sample(
+        self,
+        signal: SignalRecord,
+        elapsed_seconds: float,
+        price: float,
+        now: datetime,
+    ) -> None:
+        start_price = float(signal.early_price or 0)
+        move = directional_move_pct(Direction(signal.direction), start_price, price)
+        async with self._database.session() as session, session.begin():
+            row = await session.scalar(
+                select(EarlyOutcomeRecord).where(EarlyOutcomeRecord.signal_id == signal.id)
+            )
+            if row is None:
+                row = EarlyOutcomeRecord(signal_id=signal.id)
+                session.add(row)
+            previous_mfe = float(row.mfe) if row.mfe is not None else 0.0
+            previous_mae = float(row.mae) if row.mae is not None else 0.0
+            row.mfe = max(previous_mfe, move)
+            row.mae = min(previous_mae, move)
+            _set_checkpoint(
+                row,
+                elapsed_seconds,
+                price,
+                tolerance_seconds=max(self._interval_seconds * 2.0, 10.0),
+            )
+            if elapsed_seconds >= 300:
+                row.evaluated_at = now
+
+
 def _price_at(klines: list[Kline], target: datetime) -> float:
     target_ms = int(target.timestamp() * 1_000)
     eligible = [item for item in klines if item.close_time_ms <= target_ms]
@@ -129,3 +216,23 @@ def _aware(value: datetime | None) -> datetime | None:
     if value is None:
         return None
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _set_checkpoint(
+    row: EarlyOutcomeRecord,
+    elapsed_seconds: float,
+    price: float,
+    *,
+    tolerance_seconds: float,
+) -> None:
+    value = Decimal(str(price))
+    if 15 <= elapsed_seconds <= 15 + tolerance_seconds and row.price_15s is None:
+        row.price_15s = value
+    if 30 <= elapsed_seconds <= 30 + tolerance_seconds and row.price_30s is None:
+        row.price_30s = value
+    if 60 <= elapsed_seconds <= 60 + tolerance_seconds and row.price_1m is None:
+        row.price_1m = value
+    if 180 <= elapsed_seconds <= 180 + tolerance_seconds and row.price_3m is None:
+        row.price_3m = value
+    if 300 <= elapsed_seconds <= 300 + tolerance_seconds and row.price_5m is None:
+        row.price_5m = value

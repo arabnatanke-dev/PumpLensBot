@@ -11,6 +11,7 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from pumplens.analytics.early_stats import load_early_statistics
 from pumplens.config import AppSettings, RuntimeSecrets
 from pumplens.onboarding.invites import InviteError
 from pumplens.onboarding.service import OnboardingService
@@ -27,7 +28,12 @@ from pumplens.storage.models import (
     SpotHoldingRecord,
     UserRecord,
 )
-from pumplens.telegram.formatter import format_portfolio, format_positions, format_top
+from pumplens.telegram.formatter import (
+    format_early_statistics,
+    format_portfolio,
+    format_positions,
+    format_top,
+)
 from pumplens.telegram.keyboards import (
     binance_keyboard,
     connected_binance_keyboard,
@@ -223,7 +229,7 @@ async def help_handler(message: Message) -> None:
     await message.answer(
         "PumpLens наблюдает рынок и не открывает сделки. Score — сила совпадения "
         "признаков, а не вероятность прибыли. Команды: /top, /status, /portfolio, "
-        "/positions, /binance, /history, /stats."
+        "/positions, /binance, /history, /stats, /early_stats."
     )
 
 
@@ -266,19 +272,29 @@ async def stats_handler(message: Message, database: Database) -> None:
             )
         ).one()
     total, targets, stops, avg_mfe, avg_mae = row
-    if not total:
-        await message.answer("Статистика прогревается: нужен минимум час после первых WATCH.")
-        return
-    target_rate = float(targets or 0) / int(total) * 100
-    await message.answer(
-        "<b>📈 PumpLens Stats</b>\n"
-        f"Завершённых наблюдений: {total}\n"
-        f"Target first: {targets or 0} ({target_rate:.1f}%)\n"
-        f"Stop first: {stops or 0}\n"
-        f"Средний MFE: {float(avg_mfe or 0):+.2f}%\n"
-        f"Средний MAE: {float(avg_mae or 0):+.2f}%\n"
-        "Это статистика наблюдений, не обещание доходности."
-    )
+    early_stats = await load_early_statistics(database)
+    lines = ["<b>📈 PumpLens Stats</b>"]
+    if total:
+        target_rate = float(targets or 0) / int(total) * 100
+        lines.extend(
+            [
+                f"Завершённых WATCH: {total}",
+                f"Target first: {targets or 0} ({target_rate:.1f}%)",
+                f"Stop first: {stops or 0}",
+                f"Средний MFE: {float(avg_mfe or 0):+.2f}%",
+                f"Средний MAE: {float(avg_mae or 0):+.2f}%",
+            ]
+        )
+    else:
+        lines.append("WATCH-статистика ещё прогревается.")
+    lines.extend(["", format_early_statistics(early_stats)])
+    lines.append("\nЭто статистика наблюдений, не обещание доходности.")
+    await message.answer("\n".join(lines))
+
+
+@router.message(Command("early_stats"))
+async def early_stats_handler(message: Message, database: Database) -> None:
+    await message.answer(format_early_statistics(await load_early_statistics(database)))
 
 
 @router.message(Command("history"))

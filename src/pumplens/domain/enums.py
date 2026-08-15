@@ -11,6 +11,7 @@ class Direction(StrEnum):
 class SignalState(StrEnum):
     NORMAL = "NORMAL"
     CANDIDATE = "CANDIDATE"
+    EARLY = "EARLY"
     WATCH = "WATCH"
     CONFIRMED = "CONFIRMED"
     INVALIDATED = "INVALIDATED"

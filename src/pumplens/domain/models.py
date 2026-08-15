@@ -153,6 +153,8 @@ class FeatureSnapshot:
     range_pct_1m: float
     candle_structure: float
     quote_volume_24h: float
+    quote_volume_1m: float = 0.0
+    trade_count_1m: int = 0
     agg_buy_pressure: float = 0.5
     agg_trade_rate_ratio: float = 0.0
     depth_imbalance: float = 0.0
@@ -196,3 +198,6 @@ class Candidate:
     selected: bool
     hard_reject_reason: str | None = None
     confirmations: tuple[str, ...] = field(default_factory=tuple)
+    early_selected: bool = False
+    early_liquidity_tier: str | None = None
+    early_snapshot: FeatureSnapshot | None = None

@@ -11,6 +11,7 @@ from typing import Any
 
 import aiofiles
 
+from pumplens.domain.enums import Direction
 from pumplens.domain.events import (
     AggTradeEvent,
     BookTickerEvent,
@@ -21,6 +22,7 @@ from pumplens.domain.events import (
     TickerEvent,
 )
 from pumplens.domain.models import AggTrade, BookTicker, DepthSnapshot, Kline, MarkPrice, Ticker24h
+from pumplens.replay.early_outcomes import EarlyReplayOutcome, evaluate_early_replay
 
 
 class ReplayFormatError(ValueError):
@@ -71,6 +73,31 @@ class ReplayReader:
             for chunk in iter(lambda: source.read(1_048_576), b""):
                 digest.update(chunk)
         return digest.hexdigest()
+
+    async def early_outcome(
+        self,
+        *,
+        direction: Direction,
+        symbol: str,
+        early_price: float,
+        early_time_ms: int,
+    ) -> EarlyReplayOutcome:
+        """Rebuild one EARLY outcome from recorded market events. / Восстанавливает EARLY."""
+
+        relevant: list[tuple[int, MarketEvent]] = []
+        async for timestamp_ms, event in self.events():
+            if timestamp_ms < early_time_ms:
+                continue
+            if timestamp_ms > early_time_ms + 300_000:
+                break
+            relevant.append((timestamp_ms, event))
+        return evaluate_early_replay(
+            direction,
+            symbol,
+            early_price,
+            early_time_ms,
+            relevant,
+        )
 
 
 def decode_event(event_type: str, payload: dict[str, Any]) -> MarketEvent:

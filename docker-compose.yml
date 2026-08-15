@@ -54,7 +54,16 @@ services:
     environment:
       POSTGRES_DB: pumplens
       POSTGRES_USER: pumplens
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set a strong POSTGRES_PASSWORD in .env}
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        if [ "$$POSTGRES_PASSWORD" = "change_me" ] || [ "$$POSTGRES_PASSWORD" = "replace_with_a_long_random_password" ]; then
+          echo "Refusing insecure POSTGRES_PASSWORD / Небезопасный POSTGRES_PASSWORD запрещён" >&2
+          exit 1
+        fi
+        exec docker-entrypoint.sh postgres
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U pumplens -d pumplens"]
       interval: 5s

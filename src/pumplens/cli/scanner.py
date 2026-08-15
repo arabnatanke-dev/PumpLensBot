@@ -95,7 +95,14 @@ async def run_scanner(
                 await recorder.record(event)
 
         normalizer = BinanceNormalizer(frozenset(symbols))
-        feature_engine = FeatureEngine(state, settings.binance.stale_after_seconds)
+        feature_engine = FeatureEngine(
+            state,
+            settings.binance.stale_after_seconds,
+            oi_stale_after_seconds=max(
+                settings.binance.stale_after_seconds,
+                settings.oi.poll_seconds * 2.5,
+            ),
+        )
         stage_a = StageAScanner(feature_engine, settings.scanner, settings.late)
         stage_b = StageBManager(max_candidates=settings.scanner.max_deep_candidates)
         signal_fsm = SignalFSM(state, settings.scanner, settings.late)

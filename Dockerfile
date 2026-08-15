@@ -8,9 +8,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY pyproject.toml README.md ./
+COPY pyproject.toml README.md requirements.lock ./
 COPY src ./src
-RUN pip install --upgrade pip && pip install '.[telegram,storage,security,webapp]'
+RUN pip install --upgrade pip \
+    && pip install --requirement requirements.lock \
+    && pip install --no-deps .
 
 COPY settings.yaml ./settings.yaml
 COPY alembic.ini ./alembic.ini

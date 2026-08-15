@@ -46,7 +46,13 @@ class SymbolBuffer:
     depth: DepthSnapshot | None = None
     trade_buckets: deque[TradeBucket] = field(default_factory=lambda: deque(maxlen=300))
     open_interest: deque[OpenInterestPoint] = field(default_factory=lambda: deque(maxlen=20))
-    last_received_monotonic: float = 0.0
+    last_kline_at: float = 0.0
+    last_ticker_at: float = 0.0
+    last_book_at: float = 0.0
+    last_mark_at: float = 0.0
+    last_trade_at: float = 0.0
+    last_depth_at: float = 0.0
+    last_oi_at: float = 0.0
 
     def seed(self, klines: Sequence[Kline]) -> None:
         for kline in klines:
@@ -56,8 +62,9 @@ class SymbolBuffer:
                 self.current_kline = kline
 
     def apply(self, event: MarketEvent) -> None:
-        self.last_received_monotonic = time.monotonic()
+        received_at = time.monotonic()
         if isinstance(event, KlineEvent):
+            self.last_kline_at = received_at
             kline = event.value
             if kline.closed:
                 self._append_closed(kline)
@@ -67,19 +74,24 @@ class SymbolBuffer:
                 self.current_kline = kline
             self._append_price(kline.close_time_ms, kline.close)
         elif isinstance(event, TickerEvent):
+            self.last_ticker_at = received_at
             self.ticker = event.value
             self._append_price(event.value.event_time_ms, event.value.last_price)
         elif isinstance(event, BookTickerEvent):
+            self.last_book_at = received_at
             self.book = event.value
         elif isinstance(event, MarkPriceEvent):
+            self.last_mark_at = received_at
             self.mark = event.value
         elif isinstance(event, AggTradeEvent):
+            self.last_trade_at = received_at
             self._append_agg_trade(
                 event.value.event_time_ms,
                 event.value.quote_notional,
                 event.value.aggressive_buy,
             )
         elif isinstance(event, DepthEvent):
+            self.last_depth_at = received_at
             self.depth = event.value
 
     def _append_closed(self, kline: Kline) -> None:
@@ -115,6 +127,7 @@ class SymbolBuffer:
         if self.open_interest and point.timestamp_ms <= self.open_interest[-1].timestamp_ms:
             return
         self.open_interest.append(point)
+        self.last_oi_at = time.monotonic()
 
 
 class MarketState:

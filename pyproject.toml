@@ -53,6 +53,9 @@ packages = ["src/pumplens"]
 addopts = "-ra --strict-markers"
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+  "integration: live external integration tests / живые внешние интеграционные тесты",
+]
 
 [tool.ruff]
 line-length = 100

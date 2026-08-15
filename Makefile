@@ -1,4 +1,4 @@
-.PHONY: install check test lint typecheck scan migrate serve
+.PHONY: install check test lint typecheck scan smoke-ws migrate serve
 
 install:
 	python3.12 -m venv .venv
@@ -17,6 +17,9 @@ typecheck:
 
 scan:
 	.venv/bin/pumplens scan
+
+smoke-ws:
+	RUN_BINANCE_WS_SMOKE=1 .venv/bin/pytest -m integration tests/integration/test_binance_websocket_smoke.py
 
 migrate:
 	.venv/bin/alembic upgrade head

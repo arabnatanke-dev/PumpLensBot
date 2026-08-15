@@ -47,9 +47,15 @@ def price_at_or_before(points: Sequence[tuple[int, float]], target_ms: int) -> f
 
 
 class FeatureEngine:
-    def __init__(self, state: MarketState, stale_after_seconds: float) -> None:
+    def __init__(
+        self,
+        state: MarketState,
+        stale_after_seconds: float,
+        oi_stale_after_seconds: float | None = None,
+    ) -> None:
         self._state = state
         self._stale_after_seconds = stale_after_seconds
+        self._oi_stale_after_seconds = oi_stale_after_seconds or stale_after_seconds
 
     def snapshot_all(self) -> list[FeatureSnapshot]:
         raw = [self._snapshot_symbol(symbol) for symbol in self._state.symbols]
@@ -86,6 +92,7 @@ class FeatureEngine:
         range_pct = current.range_pct if current is not None else closed[-1].range_pct
         structure = candle_structure(current or closed[-1], direction)
         quote_volume = buffer.ticker.quote_volume if buffer.ticker is not None else 0.0
+        now = time.monotonic()
         (
             agg_pressure,
             agg_trade_ratio,
@@ -94,11 +101,19 @@ class FeatureEngine:
             ask_depth,
             oi_delta,
             deep_ready,
-        ) = self._deep_features(buffer)
-        age = time.monotonic() - buffer.last_received_monotonic
+        ) = self._deep_features(buffer, now)
+        required_streams = (
+            buffer.last_kline_at,
+            buffer.last_ticker_at,
+            buffer.last_book_at,
+            buffer.last_mark_at,
+        )
         quality = (
             DataQuality.FRESH
-            if buffer.last_received_monotonic > 0 and age <= self._stale_after_seconds
+            if all(
+                _is_fresh(received_at, now, self._stale_after_seconds)
+                for received_at in required_streams
+            )
             else DataQuality.STALE
         )
 
@@ -199,9 +214,10 @@ class FeatureEngine:
         pressure = observed.taker_buy_quote_volume / max(observed.quote_volume, EPSILON)
         return volume_ratio, volume_z, trade_ratio, min(max(pressure, 0.0), 1.0)
 
-    @staticmethod
     def _deep_features(
+        self,
         buffer: SymbolBuffer,
+        now: float,
     ) -> tuple[float, float, float, float, float, float, bool]:
         buckets = list(buffer.trade_buckets)
         recent = buckets[-60:]
@@ -241,7 +257,14 @@ class FeatureEngine:
             if old is not None:
                 oi_delta = pct_return(latest.open_interest, old.open_interest)
 
-        deep_ready = total_quote > 0 and buffer.depth is not None
+        deep_ready = (
+            total_quote > 0
+            and buffer.depth is not None
+            and bool(oi_points)
+            and _is_fresh(buffer.last_trade_at, now, self._stale_after_seconds)
+            and _is_fresh(buffer.last_depth_at, now, self._stale_after_seconds)
+            and _is_fresh(buffer.last_oi_at, now, self._oi_stale_after_seconds)
+        )
         return (
             agg_pressure,
             agg_trade_ratio,
@@ -251,6 +274,12 @@ class FeatureEngine:
             oi_delta,
             deep_ready,
         )
+
+
+def _is_fresh(received_at: float, now: float, max_age_seconds: float) -> bool:
+    """Check one independent feed clock. / Проверяет часы отдельного потока."""
+
+    return received_at > 0 and now - received_at <= max_age_seconds
 
 
 def candle_structure(kline: Kline, direction: Direction) -> float:

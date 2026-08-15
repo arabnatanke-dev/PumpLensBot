@@ -1,0 +1,28 @@
+name: Binance WebSocket Smoke
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  routed-streams:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install locked environment / Установить lock-окружение
+        run: |
+          pip install --requirement requirements.lock
+          pip install --no-deps --editable .
+      - name: Check market and public routes / Проверить market и public
+        env:
+          RUN_BINANCE_WS_SMOKE: "1"
+        run: pytest -m integration tests/integration/test_binance_websocket_smoke.py

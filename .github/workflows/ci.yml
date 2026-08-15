@@ -17,7 +17,9 @@ jobs:
           python-version: "3.12"
           cache: pip
       - name: Install / Установить
-        run: pip install -e '.[dev,telegram,storage,security,webapp]'
+        run: |
+          pip install --requirement requirements.lock
+          pip install --no-deps --editable .
       - name: Ruff
         run: ruff check .
       - name: Mypy

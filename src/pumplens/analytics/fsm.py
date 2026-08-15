@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 
 import structlog
@@ -10,7 +10,7 @@ import structlog
 from pumplens.analytics.buffers import MarketState
 from pumplens.analytics.levels import SignalLevels, calculate_levels
 from pumplens.config import LateSettings, ScannerSettings
-from pumplens.domain.enums import Direction, SignalState
+from pumplens.domain.enums import DataQuality, Direction, SignalState
 from pumplens.domain.models import Candidate, FeatureSnapshot
 
 log = structlog.get_logger(__name__)
@@ -69,7 +69,26 @@ class SignalFSM:
     ) -> SignalTransition | None:
         now = now or datetime.now(UTC)
         snapshot = candidate.snapshot
+        direction_flip = self._direction_flip(snapshot, now)
+        if direction_flip is not None:
+            return direction_flip
         lifecycle = self.lifecycle(snapshot.symbol, snapshot.direction)
+
+        if snapshot.data_quality is not DataQuality.FRESH:
+            lifecycle.confirmed_score_since = None
+            if lifecycle.state in {
+                SignalState.CANDIDATE,
+                SignalState.WATCH,
+                SignalState.CONFIRMED,
+            }:
+                return self._transition(
+                    lifecycle,
+                    SignalState.INVALIDATED,
+                    "DATA_STALE",
+                    now,
+                    snapshot,
+                )
+            return None
 
         # TOO_LATE wins over confirmation in the same measurement.
         # TOO_LATE имеет приоритет над подтверждением в одном измерении.
@@ -96,6 +115,7 @@ class SignalFSM:
             if (
                 self._watch_confirmations(candidate)
                 and snapshot.score >= self._settings.watch_score
+                and snapshot.deep_data_ready
             ):
                 lifecycle.trigger_price = snapshot.last_price
                 lifecycle.levels = self._calculate_levels(lifecycle, snapshot)
@@ -119,7 +139,7 @@ class SignalFSM:
                     snapshot,
                 )
 
-            if snapshot.score >= self._settings.confirmed_score:
+            if snapshot.deep_data_ready and snapshot.score >= self._settings.confirmed_score:
                 lifecycle.confirmed_score_since = lifecycle.confirmed_score_since or now
                 if now - lifecycle.confirmed_score_since >= timedelta(seconds=5):
                     lifecycle.confirmed_at = now
@@ -170,6 +190,33 @@ class SignalFSM:
                 snapshot,
             )
         return None
+
+    def _direction_flip(
+        self,
+        snapshot: FeatureSnapshot,
+        now: datetime,
+    ) -> SignalTransition | None:
+        """Close the opposite active signal. / Закрывает активный обратный сигнал."""
+
+        opposite = Direction.SHORT if snapshot.direction is Direction.LONG else Direction.LONG
+        lifecycle = self._lifecycles.get((snapshot.symbol, opposite))
+        if lifecycle is None or lifecycle.state not in {
+            SignalState.CANDIDATE,
+            SignalState.WATCH,
+            SignalState.CONFIRMED,
+        }:
+            return None
+        lifecycle.cooldown_until = now + timedelta(minutes=self._settings.cooldown_minutes)
+        # Persist the old direction consistently even though the new snapshot flipped.
+        # Сохраняем старое направление, хотя новый snapshot уже развернулся.
+        opposite_snapshot = replace(snapshot, direction=opposite)
+        return self._transition(
+            lifecycle,
+            SignalState.COOLDOWN,
+            "DIRECTION_FLIP",
+            now,
+            opposite_snapshot,
+        )
 
     @staticmethod
     def _watch_confirmations(candidate: Candidate) -> bool:

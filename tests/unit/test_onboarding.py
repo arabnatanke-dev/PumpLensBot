@@ -83,6 +83,18 @@ def test_connect_session_is_bound_and_one_time() -> None:
         store.consume(replacement.session_token, replacement.csrf_token, telegram_user_id=42)
 
 
+def test_connect_session_validation_does_not_consume_link() -> None:
+    store = ConnectSessionStore(ttl_seconds=600)
+    tokens = store.create(telegram_user_id=42)
+
+    store.validate(tokens.session_token, tokens.csrf_token, telegram_user_id=42)
+    store.validate(tokens.session_token, tokens.csrf_token, telegram_user_id=42)
+    store.consume(tokens.session_token, tokens.csrf_token, telegram_user_id=42)
+
+    with pytest.raises(ConnectSessionError):
+        store.validate(tokens.session_token, tokens.csrf_token, telegram_user_id=42)
+
+
 async def test_expired_invite_is_rejected() -> None:
     database = await make_database()
     try:

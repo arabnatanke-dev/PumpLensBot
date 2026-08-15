@@ -79,7 +79,6 @@ class PortfolioService:
                     client.spot_prices(),
                 )
         except BinanceCredentialError:
-            account.status = "STALE"
             raise
 
         spot_rows, spot_value, partial = _parse_spot(spot, prices, account.id)
@@ -160,12 +159,27 @@ class PortfolioReconciler:
             try:
                 async with self._database.session() as session, session.begin():
                     await self._service.reconcile(session, account_id)
+            except BinanceCredentialError as exc:
+                await self._mark_stale(account_id)
+                log.warning(
+                    "portfolio_reconcile_failed",
+                    exchange_account_id=str(account_id),
+                    error=type(exc).__name__,
+                )
             except Exception as exc:
                 log.warning(
                     "portfolio_reconcile_failed",
                     exchange_account_id=str(account_id),
                     error=type(exc).__name__,
                 )
+
+    async def _mark_stale(self, account_id: uuid.UUID) -> None:
+        """Commit STALE outside the failed sync. / Коммитит STALE вне неудачной сверки."""
+
+        async with self._database.session() as session, session.begin():
+            account = await session.get(ExchangeAccountRecord, account_id)
+            if account is not None:
+                account.status = "STALE"
 
 
 def _parse_spot(

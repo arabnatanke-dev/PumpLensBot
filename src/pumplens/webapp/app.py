@@ -100,7 +100,7 @@ def create_web_app(
         master_key = _required_secret(runtime.credential_master_key, "vault_not_configured")
         try:
             verified = validate_init_data(payload.init_data.get_secret_value(), token)
-            connect_sessions.consume(
+            connect_sessions.validate(
                 payload.session_token.get_secret_value(),
                 payload.csrf_token.get_secret_value(),
                 verified.user_id,
@@ -117,6 +117,17 @@ def create_web_app(
                 verification = await binance.verify_read_only()
         except BinanceCredentialError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        # Consume only after Binance accepted the key pair, so a typo does not burn the link.
+        # Погашаем ссылку лишь после проверки Binance, чтобы опечатка её не сжигала.
+        try:
+            connect_sessions.consume(
+                payload.session_token.get_secret_value(),
+                payload.csrf_token.get_secret_value(),
+                verified.user_id,
+            )
+        except ConnectSessionError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
 
         async with database.session() as db_session, db_session.begin():
             user = await db_session.scalar(

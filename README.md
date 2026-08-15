@@ -79,6 +79,17 @@ docker compose up --build -d
 docker compose ps
 ```
 
+`POSTGRES_PASSWORD` is mandatory; Docker refuses `change_me` and the example placeholder.
+`POSTGRES_PASSWORD` обязателен; Docker отклоняет `change_me` и пример-заглушку.
+
+Binance USD-M streams use separate routed connections: regular market data through
+`/market`, and book/depth data through `/public`.
+Потоки Binance USD-M разделены: обычные рыночные данные идут через `/market`,
+а book/depth — через `/public`.
+
+Run the opt-in live WebSocket check with `make smoke-ws`.
+Живую WebSocket-проверку можно запустить командой `make smoke-ws`.
+
 ## Security / Безопасность
 
 - Never commit `.env`, API keys, Telegram tokens, or the credential master key.

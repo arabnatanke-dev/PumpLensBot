@@ -10,11 +10,11 @@ from pumplens.domain.enums import DataQuality, Direction, SignalState
 from pumplens.domain.models import Candidate, FeatureSnapshot, Kline
 
 
-def snapshot(score: float = 75) -> FeatureSnapshot:
+def snapshot(score: float = 75, direction: Direction = Direction.LONG) -> FeatureSnapshot:
     return FeatureSnapshot(
         symbol="TESTUSDT",
         timestamp=datetime.now(UTC),
-        direction=Direction.LONG,
+        direction=direction,
         last_price=102,
         return_1m=1.2,
         return_3m=1.8,
@@ -38,9 +38,13 @@ def snapshot(score: float = 75) -> FeatureSnapshot:
     )
 
 
-def candidate(score: float = 75, hard_reject: str | None = None) -> Candidate:
+def candidate(
+    score: float = 75,
+    hard_reject: str | None = None,
+    direction: Direction = Direction.LONG,
+) -> Candidate:
     return Candidate(
-        snapshot=snapshot(score),
+        snapshot=snapshot(score, direction),
         selected=True,
         hard_reject_reason=hard_reject,
         confirmations=("price", "volume", "pressure", "trade_rate"),
@@ -98,3 +102,40 @@ def test_too_late_has_priority_over_confirmation() -> None:
     too_late = replace(candidate(95, "too_late"), snapshot=replace(snapshot(95), return_5m=9))
     transition = fsm.advance(too_late, now + timedelta(seconds=10))
     assert transition is not None and transition.to_state is SignalState.TOO_LATE
+
+
+def test_direction_flip_closes_opposite_watch_before_starting_new_signal() -> None:
+    fsm = SignalFSM(seeded_state(), ScannerSettings(), LateSettings())
+    now = datetime.now(UTC)
+    fsm.advance(candidate(direction=Direction.LONG), now)
+    fsm.advance(candidate(direction=Direction.LONG), now + timedelta(seconds=1))
+
+    flipped = fsm.advance(
+        candidate(direction=Direction.SHORT),
+        now + timedelta(seconds=2),
+    )
+    assert flipped is not None
+    assert flipped.direction is Direction.LONG
+    assert flipped.to_state is SignalState.COOLDOWN
+    assert flipped.reason_code == "DIRECTION_FLIP"
+
+    new_signal = fsm.advance(
+        candidate(direction=Direction.SHORT),
+        now + timedelta(seconds=3),
+    )
+    assert new_signal is not None
+    assert new_signal.direction is Direction.SHORT
+    assert new_signal.to_state is SignalState.CANDIDATE
+
+
+def test_stale_required_data_invalidates_watch() -> None:
+    fsm = SignalFSM(seeded_state(), ScannerSettings(), LateSettings())
+    now = datetime.now(UTC)
+    fsm.advance(candidate(), now)
+    fsm.advance(candidate(), now + timedelta(seconds=1))
+
+    stale = replace(candidate(), snapshot=replace(snapshot(), data_quality=DataQuality.STALE))
+    transition = fsm.advance(stale, now + timedelta(seconds=2))
+    assert transition is not None
+    assert transition.to_state is SignalState.INVALIDATED
+    assert transition.reason_code == "DATA_STALE"

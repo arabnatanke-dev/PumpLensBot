@@ -49,6 +49,20 @@ class ConnectSessionStore:
         return ConnectSessionTokens(session_token, csrf_token, expires_at)
 
     def consume(self, session_token: str, csrf_token: str, telegram_user_id: int) -> None:
+        stored = self._validate(session_token, csrf_token, telegram_user_id)
+        stored.used = True
+
+    def validate(self, session_token: str, csrf_token: str, telegram_user_id: int) -> None:
+        """Validate without consuming. / Проверяет без погашения ссылки."""
+
+        self._validate(session_token, csrf_token, telegram_user_id)
+
+    def _validate(
+        self,
+        session_token: str,
+        csrf_token: str,
+        telegram_user_id: int,
+    ) -> _StoredSession:
         self._purge()
         session_hash = self._hash(session_token)
         stored = self._sessions.get(session_hash)
@@ -58,7 +72,7 @@ class ConnectSessionStore:
             raise ConnectSessionError("connect_session_user_mismatch")
         if not hmac.compare_digest(stored.csrf_hash, self._hash(csrf_token)):
             raise ConnectSessionError("csrf_invalid")
-        stored.used = True
+        return stored
 
     def _purge(self) -> None:
         now = time.monotonic()

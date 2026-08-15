@@ -1,0 +1,48 @@
+# Public scanner settings; no API key is required.
+# Настройки публичного сканера; API-ключ не требуется.
+binance:
+  rest_base_url: https://fapi.binance.com
+  websocket_base_url: wss://fstream.binance.com
+  request_timeout_seconds: 15.0
+  warmup_concurrency: 8
+  websocket_streams_per_connection: 180
+  reconnect_max_seconds: 30.0
+  planned_rotation_seconds: 85500
+  stale_after_seconds: 12.0
+
+scanner:
+  profile: balanced
+  min_quote_volume_24h: 2000000
+  max_spread_pct: 0.35
+  hard_reject_spread_pct: 0.70
+  max_deep_candidates: 30
+  candidate_score: 55
+  watch_score: 70
+  confirmed_score: 82
+  cooldown_minutes: 20
+  warmup_klines: 120
+  scan_interval_seconds: 1.0
+  top_limit: 10
+
+late:
+  return_5m_pct: 8.0
+  return_15m_pct: 15.0
+  range_1m_pct: 6.0
+
+oi:
+  poll_seconds: 30
+
+onboarding:
+  invite_only: true
+  connect_session_ttl_seconds: 600
+  privacy_version: "1.0"
+
+portfolio:
+  rest_reconcile_seconds: 300
+  listen_key_keepalive_seconds: 2700
+  max_private_accounts_per_instance: 50
+
+notifications:
+  edit_debounce_seconds: 4
+  min_score: 70
+  directions: [LONG, SHORT]

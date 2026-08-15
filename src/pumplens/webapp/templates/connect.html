@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PumpLens — Binance</title>
+    <link rel="stylesheet" href="/static/connect.css">
+    <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
+    <script src="/static/connect.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <h1>Подключение Binance</h1>
+      <p class="lead">Только read-only доступ. PumpLens не умеет создавать ордера.</p>
+      <form id="connect-form" autocomplete="off">
+        <input id="session-token" type="hidden" value="{{ session_token }}">
+        <input id="csrf-token" type="hidden" value="{{ csrf_token }}">
+        <label>
+          API Key
+          <input id="api-key" type="password" autocomplete="off" required>
+        </label>
+        <label>
+          Secret Key
+          <input id="secret-key" type="password" autocomplete="off" required>
+        </label>
+        <label>
+          Название подключения
+          <input id="label" type="text" value="Binance Main" maxlength="128" required>
+        </label>
+        <label class="check">
+          <input id="read-only" type="checkbox" required>
+          Я оставил только Enable Reading и отключил торговлю, вывод и переводы.
+        </label>
+        <button id="submit" type="submit">Проверить и подключить</button>
+        <p id="status" role="status" aria-live="polite"></p>
+      </form>
+      <p class="note">Ключи не сохраняются в браузере и шифруются только после проверки прав.</p>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,68 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pumplens"
+version = "0.1.0"
+description = "Explainable Binance USD-M Futures anomaly scanner and Telegram portfolio monitor"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+authors = [{ name = "PumpLens" }]
+dependencies = [
+  "httpx>=0.28,<1",
+  "pydantic>=2.10,<3",
+  "pydantic-settings>=2.7,<3",
+  "PyYAML>=6.0,<7",
+  "structlog>=25.1,<26",
+  "websockets>=14,<16",
+]
+
+[project.optional-dependencies]
+dev = [
+  "aiosqlite>=0.20,<1",
+  "mypy>=1.14,<2",
+  "pytest>=8.3,<9",
+  "pytest-asyncio>=0.25,<1",
+  "pytest-cov>=6,<7",
+  "ruff>=0.9,<1",
+  "types-aiofiles>=25.1,<26",
+  "types-PyYAML>=6.0,<7",
+]
+telegram = ["aiogram>=3.17,<4"]
+storage = [
+  "alembic>=1.14,<2",
+  "asyncpg>=0.30,<1",
+  "sqlalchemy[asyncio]>=2.0.37,<3",
+]
+security = ["cryptography>=44,<46"]
+webapp = [
+  "fastapi>=0.115,<1",
+  "jinja2>=3.1,<4",
+  "uvicorn[standard]>=0.34,<1",
+]
+
+[project.scripts]
+pumplens = "pumplens.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pumplens"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "SIM", "RUF"]
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["pumplens"]

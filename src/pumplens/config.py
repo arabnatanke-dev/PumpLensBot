@@ -179,6 +179,11 @@ class NotificationSettings(StrictModel):
     directions: tuple[Literal["LONG", "SHORT"], ...] = ("LONG", "SHORT")
 
 
+class TelegramSettings(StrictModel):
+    signal_ttl_hours: PositiveInt = 47
+    cleanup_scan_seconds: PositiveFloat = 60.0
+
+
 class AppSettings(StrictModel):
     binance: BinanceSettings = BinanceSettings()
     scanner: ScannerSettings = ScannerSettings()
@@ -189,6 +194,7 @@ class AppSettings(StrictModel):
     portfolio: PortfolioSettings = PortfolioSettings()
     replay: ReplaySettings = ReplaySettings()
     notifications: NotificationSettings = NotificationSettings()
+    telegram: TelegramSettings = TelegramSettings()
 
 
 class RuntimeSecrets(BaseSettings):

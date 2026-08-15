@@ -1,0 +1,297 @@
+"""Clean Telegram panel and cleanup tests. / Тесты чистой панели и cleanup."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from typing import Any, cast
+
+import pytest
+from aiogram import Bot
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.methods import DeleteMessage, EditMessageText
+from sqlalchemy import select
+
+from pumplens.storage.db import Database
+from pumplens.storage.models import (
+    Base,
+    DeliveryRecord,
+    ExchangeAccountRecord,
+    RiskAlertRecord,
+    SignalRecord,
+    UserRecord,
+)
+from pumplens.telegram.clean_ui import _edit_callback, _history_text
+from pumplens.telegram.keyboards import panel_home_keyboard
+from pumplens.telegram.notifications import DeliveryCleanupWorker, DeliveryWorker
+from pumplens.telegram.panel import delete_command_best_effort, show_or_edit_panel
+
+
+@pytest.fixture
+async def database() -> Database:
+    db = Database("sqlite+aiosqlite:///:memory:")
+    async with db.engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    try:
+        yield db
+    finally:
+        await db.dispose()
+
+
+class FakeBot:
+    def __init__(self, *, edit_error: Exception | None = None) -> None:
+        self.edit_error = edit_error
+        self.edits: list[int] = []
+        self.sent: list[int] = []
+        self.deleted: list[tuple[int, int]] = []
+        self.next_message_id = 900
+
+    async def edit_message_text(self, _text: str, **kwargs: object) -> None:
+        if self.edit_error:
+            raise self.edit_error
+        self.edits.append(int(kwargs["message_id"]))
+
+    async def send_message(self, chat_id: int, _text: str, **_kwargs: object) -> object:
+        self.sent.append(chat_id)
+        return SimpleNamespace(message_id=self.next_message_id)
+
+    async def delete_message(self, chat_id: int, message_id: int) -> None:
+        self.deleted.append((chat_id, message_id))
+
+
+async def _user(database: Database, *, panel_id: int | None = None) -> UserRecord:
+    async with database.session() as session, session.begin():
+        user = UserRecord(
+            telegram_user_id=42,
+            chat_id=42,
+            status="ACTIVE",
+            onboarding_state="COMPLETE",
+            telegram_panel_message_id=panel_id,
+        )
+        session.add(user)
+        await session.flush()
+        return user
+
+
+def test_main_panel_keyboard_contract() -> None:
+    keyboard = panel_home_keyboard().inline_keyboard
+    callbacks = [button.callback_data for row in keyboard for button in row]
+    assert callbacks == [
+        "panel:status",
+        "panel:portfolio",
+        "panel:positions",
+        "panel:early",
+        "panel:history",
+        "panel:settings",
+        "panel:refresh",
+    ]
+
+
+async def test_panel_edits_saved_message_instead_of_sending(database: Database) -> None:
+    await _user(database, panel_id=77)
+    bot = FakeBot()
+    result = await show_or_edit_panel(
+        cast(Bot, cast(Any, bot)),
+        database,
+        telegram_user_id=42,
+        chat_id=42,
+        text="panel",
+        reply_markup=panel_home_keyboard(),
+    )
+    assert result == 77
+    assert bot.edits == [77]
+    assert bot.sent == []
+
+
+async def test_panel_falls_back_to_new_message_and_persists_it(database: Database) -> None:
+    await _user(database, panel_id=77)
+    error = TelegramBadRequest(
+        method=EditMessageText(chat_id=42, message_id=77, text="panel"),
+        message="message to edit not found",
+    )
+    bot = FakeBot(edit_error=error)
+    result = await show_or_edit_panel(
+        cast(Bot, cast(Any, bot)),
+        database,
+        telegram_user_id=42,
+        chat_id=42,
+        text="panel",
+        reply_markup=panel_home_keyboard(),
+    )
+    assert result == 900
+    assert bot.sent == [42]
+    async with database.session() as session:
+        user = await session.scalar(select(UserRecord).where(UserRecord.telegram_user_id == 42))
+        assert user is not None and user.telegram_panel_message_id == 900
+
+
+async def test_slash_command_delete_is_best_effort() -> None:
+    message = cast(Any, SimpleNamespace(chat=SimpleNamespace(id=42), message_id=12))
+    bot = FakeBot()
+    await delete_command_best_effort(cast(Bot, cast(Any, bot)), message)
+    assert bot.deleted == [(42, 12)]
+
+    async def fail_delete(_chat_id: int, _message_id: int) -> None:
+        raise RuntimeError("no rights")
+
+    bot.delete_message = fail_delete  # type: ignore[method-assign]
+    await delete_command_best_effort(cast(Bot, cast(Any, bot)), message)
+
+
+async def test_onboarding_edits_the_same_message(database: Database) -> None:
+    await _user(database, panel_id=55)
+    bot = FakeBot()
+    callback = cast(
+        Any,
+        SimpleNamespace(
+            from_user=SimpleNamespace(id=42),
+            message=SimpleNamespace(chat=SimpleNamespace(id=42), message_id=55),
+        ),
+    )
+    await _edit_callback(
+        callback,
+        cast(Bot, cast(Any, bot)),
+        database,
+        "next",
+        panel_home_keyboard(),
+    )
+    assert bot.edits == [55]
+    assert bot.sent == []
+
+
+async def test_signal_delivery_persists_message_and_delete_after(database: Database) -> None:
+    user = await _user(database)
+    async with database.session() as session, session.begin():
+        signal = SignalRecord(symbol="BTCUSDT", direction="LONG", state="WATCH", score=72)
+        session.add(signal)
+        await session.flush()
+        job = DeliveryRecord(
+            signal_id=signal.id,
+            user_id=user.id,
+            chat_id=42,
+            stage="WATCH",
+            action="SEND",
+            status="PROCESSING",
+        )
+        session.add(job)
+        await session.flush()
+        job_id = job.id
+    before = datetime.now(UTC)
+    bot = FakeBot()
+    worker = DeliveryWorker(database, cast(Bot, cast(Any, bot)), signal_ttl_hours=47)
+    await worker._deliver(job_id)
+    async with database.session() as session:
+        stored = await session.get(DeliveryRecord, job_id)
+        assert stored is not None and stored.message_id == 900
+        assert stored.delete_after is not None
+        assert stored.delete_after.replace(tzinfo=UTC) >= before + timedelta(hours=46)
+
+
+async def test_cleanup_only_deletes_due_signal_messages(database: Database) -> None:
+    user = await _user(database, panel_id=777)
+    now = datetime.now(UTC)
+    async with database.session() as session, session.begin():
+        account = ExchangeAccountRecord(
+            user_id=user.id,
+            exchange="BINANCE",
+            permissions_json={},
+            key_last4="1234",
+        )
+        session.add(account)
+        signals = [
+            SignalRecord(symbol="BTCUSDT", direction="LONG", state="WATCH", score=72),
+            SignalRecord(symbol="ETHUSDT", direction="SHORT", state="WATCH", score=75),
+        ]
+        session.add_all(signals)
+        await session.flush()
+        session.add_all(
+            [
+                DeliveryRecord(
+                    signal_id=signals[0].id,
+                    user_id=user.id,
+                    chat_id=42,
+                    message_id=101,
+                    stage="WATCH",
+                    action="SEND",
+                    status="SENT",
+                    delete_after=now - timedelta(seconds=1),
+                ),
+                DeliveryRecord(
+                    signal_id=signals[1].id,
+                    user_id=user.id,
+                    chat_id=42,
+                    message_id=102,
+                    stage="WATCH",
+                    action="SEND",
+                    status="SENT",
+                    delete_after=now + timedelta(hours=1),
+                ),
+            ]
+        )
+        session.add(
+            RiskAlertRecord(
+                user_id=user.id,
+                exchange_account_id=account.id,
+                chat_id=42,
+                alert_type="MARGIN_RISK",
+                dedupe_key="risk-1",
+                message="critical",
+                status="SENT",
+                active=True,
+            )
+        )
+    bot = FakeBot()
+    cleaned = await DeliveryCleanupWorker(
+        database,
+        cast(Bot, cast(Any, bot)),
+    ).cleanup_once(now=now)
+    assert cleaned == 1
+    assert bot.deleted == [(42, 101)]
+    assert (42, 777) not in bot.deleted
+
+
+async def test_already_deleted_signal_is_terminal_and_history_survives(
+    database: Database,
+) -> None:
+    user = await _user(database)
+    now = datetime.now(UTC)
+    async with database.session() as session, session.begin():
+        signal = SignalRecord(
+            symbol="SOLUSDT",
+            direction="LONG",
+            state="CONFIRMED",
+            score=88,
+            watch_at=now,
+        )
+        session.add(signal)
+        await session.flush()
+        job = DeliveryRecord(
+            signal_id=signal.id,
+            user_id=user.id,
+            chat_id=42,
+            message_id=103,
+            stage="CONFIRMED",
+            action="EDIT",
+            status="SENT",
+            delete_after=now - timedelta(seconds=1),
+        )
+        session.add(job)
+        await session.flush()
+        job_id = job.id
+    error = TelegramBadRequest(
+        method=DeleteMessage(chat_id=42, message_id=103),
+        message="message to delete not found",
+    )
+    bot = FakeBot()
+
+    async def missing(_chat_id: int, _message_id: int) -> None:
+        raise error
+
+    bot.delete_message = missing  # type: ignore[method-assign]
+    worker = DeliveryCleanupWorker(database, cast(Bot, cast(Any, bot)))
+    assert await worker.cleanup_once(now=now) == 1
+    async with database.session() as session:
+        stored = await session.get(DeliveryRecord, job_id)
+        assert stored is not None and stored.deleted_at is not None
+        assert stored.cleanup_error == "already_deleted"
+    assert "SOLUSDT" in await _history_text(database)

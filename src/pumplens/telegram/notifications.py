@@ -6,11 +6,17 @@ import asyncio
 import html
 import time
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
 from aiogram import Bot
-from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramForbiddenError,
+    TelegramNotFound,
+    TelegramRetryAfter,
+)
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -144,10 +150,12 @@ class DeliveryWorker:
         database: Database,
         bot: Bot,
         public_base_url: str | None = None,
+        signal_ttl_hours: int = 47,
     ) -> None:
         self._database = database
         self._bot = bot
         self._public_base_url = public_base_url
+        self._signal_ttl = timedelta(hours=signal_ttl_hours)
         self._last_chat_delivery: dict[int, float] = {}
 
     async def run(self) -> None:
@@ -208,7 +216,13 @@ class DeliveryWorker:
                     reply_markup=keyboard,
                 )
                 message_id = message.message_id
-            await self._mark(job_id, "SENT", None, message_id)
+            await self._mark(
+                job_id,
+                "SENT",
+                None,
+                message_id,
+                delete_after=datetime.now(UTC) + self._signal_ttl,
+            )
         except TelegramRetryAfter as exc:
             await asyncio.sleep(float(exc.retry_after))
             await self._retry(job_id, "telegram_rate_limit")
@@ -249,6 +263,7 @@ class DeliveryWorker:
         status: str,
         error: str | None,
         message_id: int | None = None,
+        delete_after: datetime | None = None,
     ) -> None:
         async with self._database.session() as session, session.begin():
             job = await session.get(DeliveryRecord, job_id)
@@ -257,6 +272,8 @@ class DeliveryWorker:
                 job.error = error
                 if message_id is not None:
                     job.message_id = message_id
+                if delete_after is not None:
+                    job.delete_after = delete_after
 
     async def _retry(self, job_id: uuid.UUID, error: str) -> None:
         async with self._database.session() as session, session.begin():
@@ -265,6 +282,78 @@ class DeliveryWorker:
                 job.retry_count += 1
                 job.error = error[:128]
                 job.status = "PENDING" if job.retry_count <= 5 else "FAILED"
+
+
+class DeliveryCleanupWorker:
+    """Delete expired signal messages from persistent jobs. / Удаляет просроченные сигналы."""
+
+    def __init__(self, database: Database, bot: Bot, *, scan_seconds: float = 60.0) -> None:
+        self._database = database
+        self._bot = bot
+        self._scan_seconds = scan_seconds
+
+    async def run(self) -> None:
+        while True:
+            try:
+                await self.cleanup_once()
+            except Exception as exc:
+                log.warning("telegram_cleanup_failed", error=type(exc).__name__)
+            await asyncio.sleep(self._scan_seconds)
+
+    async def cleanup_once(self, *, now: datetime | None = None) -> int:
+        cutoff = now or datetime.now(UTC)
+        async with self._database.session() as session:
+            jobs = list(
+                await session.scalars(
+                    select(DeliveryRecord)
+                    .where(
+                        DeliveryRecord.message_id.is_not(None),
+                        DeliveryRecord.status == "SENT",
+                        DeliveryRecord.delete_after.is_not(None),
+                        DeliveryRecord.delete_after <= cutoff,
+                        DeliveryRecord.deleted_at.is_(None),
+                    )
+                    .order_by(DeliveryRecord.delete_after)
+                    .limit(100)
+                )
+            )
+        completed = 0
+        for job in jobs:
+            if job.message_id is None:
+                continue
+            error: str | None = None
+            try:
+                await self._bot.delete_message(job.chat_id, job.message_id)
+            except (TelegramBadRequest, TelegramNotFound):
+                # Missing messages are already in the desired final state.
+                # Отсутствующее сообщение уже находится в нужном конечном состоянии.
+                error = "already_deleted"
+            except TelegramForbiddenError:
+                error = "chat_forbidden"
+            except Exception as exc:
+                await self._record_cleanup_error(job.id, type(exc).__name__)
+                continue
+            await self._mark_deleted(job.id, cutoff, error)
+            completed += 1
+        return completed
+
+    async def _mark_deleted(
+        self,
+        job_id: uuid.UUID,
+        deleted_at: datetime,
+        error: str | None,
+    ) -> None:
+        async with self._database.session() as session, session.begin():
+            job = await session.get(DeliveryRecord, job_id)
+            if job is not None and job.deleted_at is None:
+                job.deleted_at = deleted_at
+                job.cleanup_error = error
+
+    async def _record_cleanup_error(self, job_id: uuid.UUID, error: str) -> None:
+        async with self._database.session() as session, session.begin():
+            job = await session.get(DeliveryRecord, job_id)
+            if job is not None:
+                job.cleanup_error = error[:128]
 
 
 def format_signal(signal: SignalRecord, features: dict[str, Any]) -> str:

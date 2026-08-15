@@ -173,6 +173,7 @@ class UserRecord(UUIDPrimaryKey, Timestamped, Base):
         default="WELCOME",
         nullable=False,
     )
+    telegram_panel_message_id: Mapped[int | None] = mapped_column(BigInteger)
 
 
 class UserConsentRecord(UUIDPrimaryKey, Base):
@@ -364,6 +365,7 @@ class DeliveryRecord(UUIDPrimaryKey, Timestamped, Base):
     __table_args__ = (
         UniqueConstraint("signal_id", "user_id", "stage", name="uq_delivery_signal_user_stage"),
         Index("ix_deliveries_user_status_created", "user_id", "status", "created_at"),
+        Index("ix_deliveries_cleanup_due", "delete_after", "deleted_at"),
     )
 
     signal_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("signals.id"), nullable=False)
@@ -375,6 +377,9 @@ class DeliveryRecord(UUIDPrimaryKey, Timestamped, Base):
     status: Mapped[str] = mapped_column(String(24), nullable=False)
     retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     error: Mapped[str | None] = mapped_column(String(128))
+    delete_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cleanup_error: Mapped[str | None] = mapped_column(String(128))
 
 
 class ServiceHealthRecord(Base):

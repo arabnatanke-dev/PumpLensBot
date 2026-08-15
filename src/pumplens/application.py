@@ -16,7 +16,11 @@ from pumplens.security.credential_vault import CredentialVault
 from pumplens.service_state import ServiceState
 from pumplens.storage.db import Database
 from pumplens.telegram.bot import create_bot, run_bot
-from pumplens.telegram.notifications import DeliveryWorker, TransitionFanout
+from pumplens.telegram.notifications import (
+    DeliveryCleanupWorker,
+    DeliveryWorker,
+    TransitionFanout,
+)
 from pumplens.webapp.app import create_web_app
 from pumplens.webapp.server import run_web_server
 from pumplens.webapp.sessions import ConnectSessionStore
@@ -34,7 +38,17 @@ async def run_full_service(settings: AppSettings, runtime: RuntimeSecrets) -> No
     service_state = ServiceState()
     bot = create_bot(token)
     fanout = TransitionFanout(database, early_shadow_mode=settings.early.shadow_mode)
-    delivery_worker = DeliveryWorker(database, bot, runtime.public_base_url)
+    delivery_worker = DeliveryWorker(
+        database,
+        bot,
+        runtime.public_base_url,
+        signal_ttl_hours=settings.telegram.signal_ttl_hours,
+    )
+    delivery_cleanup = DeliveryCleanupWorker(
+        database,
+        bot,
+        scan_seconds=settings.telegram.cleanup_scan_seconds,
+    )
     portfolio_service = PortfolioService(CredentialVault(master_key))
     portfolio_reconciler = PortfolioReconciler(
         database,
@@ -110,6 +124,7 @@ async def run_full_service(settings: AppSettings, runtime: RuntimeSecrets) -> No
             group.create_task(outcome_evaluator.run(), name="signal-outcome-evaluator")
             group.create_task(early_outcome_evaluator.run(), name="early-outcome-evaluator")
             group.create_task(delivery_worker.run(), name="telegram-delivery")
+            group.create_task(delivery_cleanup.run(), name="telegram-signal-cleanup")
     finally:
         await bot.session.close()
         await database.dispose()

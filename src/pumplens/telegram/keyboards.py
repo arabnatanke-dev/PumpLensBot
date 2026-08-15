@@ -93,3 +93,86 @@ def disconnect_confirm_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Отмена", callback_data="binance:disconnect_cancel")],
         ]
     )
+
+
+def panel_home_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📡 Статус", callback_data="panel:status"),
+                InlineKeyboardButton(text="💼 Портфель", callback_data="panel:portfolio"),
+            ],
+            [
+                InlineKeyboardButton(text="📊 Позиции", callback_data="panel:positions"),
+                InlineKeyboardButton(text="🧪 EARLY", callback_data="panel:early"),
+            ],
+            [
+                InlineKeyboardButton(text="📈 История", callback_data="panel:history"),
+                InlineKeyboardButton(text="⚙️ Настройки", callback_data="panel:settings"),
+            ],
+            [InlineKeyboardButton(text="🔄 Обновить", callback_data="panel:refresh")],
+        ]
+    )
+
+
+def panel_back_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="panel:home")],
+        ]
+    )
+
+
+def panel_settings_keyboard(
+    *,
+    profile: str,
+    directions: list[str],
+    connected: bool,
+    connect_url: str | None,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton(
+                text=f"{'✓ ' if profile == 'safe' else ''}SAFE",
+                callback_data="panel:profile:safe",
+            ),
+            InlineKeyboardButton(
+                text=f"{'✓ ' if profile == 'balanced' else ''}BALANCED",
+                callback_data="panel:profile:balanced",
+            ),
+            InlineKeyboardButton(
+                text=f"{'✓ ' if profile == 'wild' else ''}WILD",
+                callback_data="panel:profile:wild",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text=f"{'✓ ' if sorted(directions) == ['LONG', 'SHORT'] else ''}LONG + SHORT",
+                callback_data="panel:directions:both",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text=f"{'✓ ' if directions == ['LONG'] else ''}LONG",
+                callback_data="panel:directions:long",
+            ),
+            InlineKeyboardButton(
+                text=f"{'✓ ' if directions == ['SHORT'] else ''}SHORT",
+                callback_data="panel:directions:short",
+            ),
+        ],
+    ]
+    if connect_url:
+        label = "🔄 Переподключить Binance" if connected else "🔗 Подключить Binance"
+        rows.append([InlineKeyboardButton(text=label, web_app=WebAppInfo(url=connect_url))])
+    if connected:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="Отключить Binance",
+                    callback_data="binance:disconnect",
+                )
+            ]
+        )
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="panel:home")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)

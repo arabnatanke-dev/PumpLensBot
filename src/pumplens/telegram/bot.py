@@ -10,7 +10,8 @@ from pumplens.config import AppSettings, RuntimeSecrets
 from pumplens.portfolio.service import PortfolioReconciler
 from pumplens.service_state import ServiceState
 from pumplens.storage.db import Database
-from pumplens.telegram.handlers import router
+from pumplens.telegram.clean_ui import router as clean_ui_router
+from pumplens.telegram.handlers import router as legacy_router
 from pumplens.webapp.sessions import ConnectSessionStore
 
 
@@ -29,7 +30,8 @@ async def run_bot(
     portfolio_reconciler: PortfolioReconciler,
 ) -> None:
     dispatcher = Dispatcher()
-    dispatcher.include_router(router)
+    dispatcher.include_router(clean_ui_router)
+    dispatcher.include_router(legacy_router)
     await dispatcher.start_polling(
         bot,
         database=database,

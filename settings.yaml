@@ -104,3 +104,9 @@ notifications:
   edit_debounce_seconds: 4
   min_score: 70
   directions: [LONG, SHORT]
+
+telegram:
+  # Telegram allows bots to delete messages for less than 48 hours.
+  # Telegram разрешает удалять сообщения младше 48 часов.
+  signal_ttl_hours: 47
+  cleanup_scan_seconds: 60

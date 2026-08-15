@@ -1,9 +1,13 @@
 """Database idempotency tests. / Тесты идемпотентности базы данных."""
 
+import sqlite3
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
+from alembic import command
+from alembic.config import Config
 from sqlalchemy import func, select
 
 from pumplens.analytics.fsm import SignalTransition
@@ -169,3 +173,25 @@ async def test_watch_transition_creates_one_user_delivery(database: Database) ->
         deliveries = list(await session.scalars(select(DeliveryRecord)))
         assert len(deliveries) == 1
         assert deliveries[0].stage == SignalState.WATCH.value
+
+
+def test_migrations_upgrade_through_telegram_clean_ui(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = Path(__file__).parents[2]
+    database_path = tmp_path / "migration.sqlite"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{database_path}")
+    config = Config(root / "alembic.ini")
+    command.upgrade(config, "head")
+    with sqlite3.connect(database_path) as connection:
+        user_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(users)").fetchall()
+        }
+        delivery_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(deliveries)").fetchall()
+        }
+        revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
+    assert "telegram_panel_message_id" in user_columns
+    assert {"delete_after", "deleted_at", "cleanup_error"} <= delivery_columns
+    assert revision == ("0005_telegram_clean_ui",)

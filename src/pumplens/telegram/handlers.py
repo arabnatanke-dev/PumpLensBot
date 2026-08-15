@@ -40,6 +40,7 @@ from pumplens.telegram.keyboards import (
     consent_keyboard,
     directions_keyboard,
     disconnect_confirm_keyboard,
+    panel_back_keyboard,
     profile_keyboard,
     welcome_keyboard,
 )
@@ -347,12 +348,15 @@ async def binance_handler(
 
 @router.callback_query(F.data.in_({"binance:portfolio", "binance:positions"}))
 async def portfolio_callback(callback: CallbackQuery, database: Database) -> None:
-    data = await _portfolio_data_for_telegram(callback.from_user.id, database)
     await callback.answer()
-    if callback.message is None:
+    data = await _portfolio_data_for_telegram(callback.from_user.id, database)
+    if not isinstance(callback.message, Message):
         return
     if data is None:
-        await callback.message.answer("Портфель ещё не синхронизирован.")
+        await callback.message.edit_text(
+            "Портфель ещё не синхронизирован.",
+            reply_markup=panel_back_keyboard(),
+        )
         return
     snapshot, positions = data
     text = (
@@ -360,7 +364,7 @@ async def portfolio_callback(callback: CallbackQuery, database: Database) -> Non
         if callback.data == "binance:portfolio"
         else format_positions(positions)
     )
-    await callback.message.answer(text)
+    await callback.message.edit_text(text, reply_markup=panel_back_keyboard())
 
 
 @router.callback_query(F.data == "binance:refresh")
@@ -369,23 +373,30 @@ async def refresh_binance_callback(
     database: Database,
     portfolio_reconciler: PortfolioReconciler,
 ) -> None:
+    await callback.answer("Обновляю…")
     async with database.session() as session:
         user = await _user_by_telegram(session, callback.from_user.id)
         account = await _account_for_user(session, user.id) if user else None
     if account is None or account.status == "DISCONNECTED":
-        await callback.answer("Binance не подключён", show_alert=True)
+        if isinstance(callback.message, Message):
+            await callback.message.edit_text(
+                "Binance не подключён.",
+                reply_markup=panel_back_keyboard(),
+            )
         return
-    await callback.answer("Обновляю…")
     ok = await portfolio_reconciler.reconcile_now(account.id)
-    if callback.message:
-        await callback.message.answer("✅ Портфель обновлён" if ok else "⚠️ Обновить не удалось")
+    if isinstance(callback.message, Message):
+        await callback.message.edit_text(
+            "✅ Портфель обновлён" if ok else "⚠️ Обновить не удалось",
+            reply_markup=panel_back_keyboard(),
+        )
 
 
 @router.callback_query(F.data == "binance:disconnect")
 async def disconnect_binance_callback(callback: CallbackQuery) -> None:
     await callback.answer()
-    if callback.message:
-        await callback.message.answer(
+    if isinstance(callback.message, Message):
+        await callback.message.edit_text(
             "Удалить зашифрованный Binance API-ключ и остановить мониторинг?",
             reply_markup=disconnect_confirm_keyboard(),
         )
@@ -394,10 +405,16 @@ async def disconnect_binance_callback(callback: CallbackQuery) -> None:
 @router.callback_query(F.data == "binance:disconnect_cancel")
 async def cancel_disconnect_callback(callback: CallbackQuery) -> None:
     await callback.answer("Отключение отменено")
+    if isinstance(callback.message, Message):
+        await callback.message.edit_text(
+            "Отключение Binance отменено.",
+            reply_markup=panel_back_keyboard(),
+        )
 
 
 @router.callback_query(F.data == "binance:disconnect_confirm")
 async def confirm_disconnect_callback(callback: CallbackQuery, database: Database) -> None:
+    await callback.answer("Binance отключается…")
     async with database.session() as session, session.begin():
         user = await _user_by_telegram(session, callback.from_user.id)
         account = await _account_for_user(session, user.id) if user else None
@@ -414,9 +431,11 @@ async def confirm_disconnect_callback(callback: CallbackQuery, database: Databas
                 delete(PositionRecord).where(PositionRecord.exchange_account_id == account.id)
             )
             account.status = "DISCONNECTED"
-    await callback.answer("Binance отключён")
-    if callback.message:
-        await callback.message.answer("Binance отключён; зашифрованный API-ключ удалён.")
+    if isinstance(callback.message, Message):
+        await callback.message.edit_text(
+            "Binance отключён; зашифрованный API-ключ удалён.",
+            reply_markup=panel_back_keyboard(),
+        )
 
 
 async def _load_user(callback: CallbackQuery, database: Database) -> UserRecord | None:

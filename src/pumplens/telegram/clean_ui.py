@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import html
-from contextlib import suppress
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import cast
@@ -100,6 +99,7 @@ async def clean_start_handler(
             chat_id=message.chat.id,
             text="<b>🤖 PumpLens</b>\nВыберите раздел в постоянном меню.",
             reply_markup=main_reply_keyboard(),
+            force_send=True,
         )
         return
     text = (
@@ -241,7 +241,7 @@ async def clean_skip_binance(
         onboarding.complete(user)
     if callback.message is None:
         return
-    new_message_id = await show_or_edit_panel(
+    await show_or_edit_panel(
         bot,
         database,
         telegram_user_id=callback.from_user.id,
@@ -251,9 +251,6 @@ async def clean_skip_binance(
         reply_markup=main_reply_keyboard(),
         force_send=True,
     )
-    if new_message_id != callback.message.message_id:
-        with suppress(Exception):
-            await bot.delete_message(callback.message.chat.id, callback.message.message_id)
 
 
 @router.callback_query(F.data.startswith("panel:"))
@@ -414,6 +411,7 @@ async def clean_panel_command(
         chat_id=message.chat.id,
         text=text,
         reply_markup=keyboard,
+        force_send=True,
     )
 
 
@@ -456,6 +454,7 @@ async def clean_reply_menu_handler(
         chat_id=message.chat.id,
         text=text,
         reply_markup=keyboard,
+        force_send=True,
     )
 
 

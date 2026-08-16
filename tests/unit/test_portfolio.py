@@ -29,7 +29,7 @@ from pumplens.storage.models import (
     UserRecord,
 )
 from pumplens.telegram.clean_ui import _portfolio_data
-from pumplens.telegram.formatter import format_portfolio
+from pumplens.telegram.formatter import format_earn, format_portfolio
 
 
 def test_spot_value_is_labeled_and_partial_when_price_missing() -> None:
@@ -186,26 +186,37 @@ async def test_optional_failure_preserves_core_and_marks_partial(
                 session, account_id
             )
         assert summary.data_quality == "PARTIAL"
+        assert summary.futures_wallet == Decimal("9.4")
         assert summary.earn_value is None
         assert summary.funding_value == Decimal("4")
         assert summary.source_status["earn_flexible"] == "UNAVAILABLE"
         async with database.session() as session:
             stored_account = await session.get(ExchangeAccountRecord, account_id)
             snapshot = await session.scalar(select(PortfolioSnapshotRecord))
+            earn_rows = list(await session.scalars(select(EarnHoldingRecord)))
             assert stored_account is not None and stored_account.status == "ACTIVE"
             assert snapshot is not None and snapshot.spot_value == Decimal("10")
-            assert len(list(await session.scalars(select(EarnHoldingRecord)))) == 1
+            assert len(earn_rows) == 1
             assert len(list(await session.scalars(select(FundingHoldingRecord)))) == 1
+            assert "Earn: PARTIAL — полный total недоступен" in format_portfolio(
+                snapshot, []
+            )
+            assert "Итого: PARTIAL — полный total недоступен" in format_earn(
+                earn_rows, snapshot.source_status_json
+            )
     finally:
         await database.dispose()
 
 
-def test_portfolio_total_does_not_double_count_unrealized_pnl() -> None:
+def test_portfolio_total_uses_documented_futures_margin_equity_once() -> None:
+    # Binance Account Information V3: totalMarginBalance is the current margin
+    # equity; totalUnrealizedProfit is already reflected in it. / Это уже equity.
+    # https://developers.binance.com/docs/derivatives/usds-margined-futures/account/rest-api-v3/Account-Information-V3
     snapshot = PortfolioSnapshotRecord(
         exchange_account_id=uuid.uuid4(),
         ts=cast(Any, None),
         spot_value=Decimal("10"),
-        futures_wallet=Decimal("7.4"),
+        futures_wallet=Decimal("9.4"),
         available=Decimal("5"),
         unrealized_pnl=Decimal("2"),
         earn_value=Decimal("3"),
@@ -214,8 +225,16 @@ def test_portfolio_total_does_not_double_count_unrealized_pnl() -> None:
         data_quality="FRESH",
     )
     text = format_portfolio(snapshot, [])
-    assert "24.40 USDT" in text
-    assert "26.40 USDT" not in text
+    assert "💰 Всего: 26.40 USDT" in text
+    assert "28.40 USDT" not in text  # Unrealized PnL must not be added twice.
+    assert "24.40 USDT" not in text  # Wallet-only value would lose current PnL.
+
+
+def test_earn_ui_distinguishes_fully_unavailable_from_partial() -> None:
+    unavailable = {"earn_flexible": "UNAVAILABLE", "earn_locked": "UNAVAILABLE"}
+    partial = {"earn_flexible": "FRESH", "earn_locked": "UNAVAILABLE"}
+    assert "полностью недоступно" in format_earn([], unavailable)
+    assert "PARTIAL — полный total недоступен" in format_earn([], partial)
 
 
 async def test_telegram_spot_holdings_are_sorted_by_value() -> None:

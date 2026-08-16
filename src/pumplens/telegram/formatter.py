@@ -43,10 +43,10 @@ def format_portfolio(
         total += snapshot.funding_value
     lines = [
         "<b>💼 Binance Portfolio</b>",
-        f"Общая стоимость: {total:.2f} USDT",
+        f"💰 Всего: {total:.2f} USDT",
         f"Spot: {snapshot.spot_value:.2f} USDT",
-        f"Futures wallet: {snapshot.futures_wallet:.2f} USDT",
-        _optional_source_line("Earn", snapshot.earn_value),
+        f"Futures equity: {snapshot.futures_wallet:.2f} USDT",
+        _earn_source_line(snapshot),
         _optional_source_line("Funding", snapshot.funding_value),
         f"Доступно на Futures: {snapshot.available:.2f} USDT",
         f"Нереализованный PnL: {snapshot.unrealized_pnl:+.2f} USDT",
@@ -81,10 +81,22 @@ def format_earn(holdings: Sequence[EarnHoldingRecord], status: dict[str, str]) -
     if not holdings:
         lines.append("Активных Flexible/Locked позиций нет.")
     for holding in holdings[:15]:
+        source = (
+            "earn_flexible" if holding.product_type == "FLEXIBLE" else "earn_locked"
+        )
+        freshness = " · последние данные" if status.get(source) == "UNAVAILABLE" else ""
         lines.append(
             f"• <b>{html.escape(holding.asset)}</b> · {holding.product_type} · "
-            f"{holding.amount:.8f} · {_value_text(holding.value_usdt)}"
+            f"{holding.amount:.8f} · {_value_text(holding.value_usdt)}{freshness}"
         )
+    unavailable_count = sum(
+        status.get(source) == "UNAVAILABLE"
+        for source in ("earn_flexible", "earn_locked")
+    )
+    if unavailable_count == 2:
+        lines.append("Итого: полностью недоступно.")
+    elif unavailable_count == 1:
+        lines.append("Итого: PARTIAL — полный total недоступен.")
     _append_source_warnings(lines, status, ("earn_flexible", "earn_locked"))
     return "\n".join(lines)
 
@@ -125,7 +137,7 @@ def format_futures(
     return "\n".join(
         [
             "<b>📊 USDⓈ-M Futures</b>",
-            f"Wallet: {snapshot.futures_wallet:.2f} USDT",
+            f"Equity (totalMarginBalance): {snapshot.futures_wallet:.2f} USDT",
             f"Доступно: {snapshot.available:.2f} USDT",
             f"Нереализованный PnL: {snapshot.unrealized_pnl:+.2f} USDT",
             "",
@@ -136,6 +148,18 @@ def format_futures(
 
 def _optional_source_line(label: str, value: object | None) -> str:
     return f"{label}: недоступно" if value is None else f"{label}: {value:.2f} USDT"
+
+
+def _earn_source_line(snapshot: PortfolioSnapshotRecord) -> str:
+    status = snapshot.source_status_json or {}
+    sources = (status.get("earn_flexible"), status.get("earn_locked"))
+    unavailable_count = sources.count("UNAVAILABLE")
+    if unavailable_count == 2:
+        return "Earn: полностью недоступно"
+    if unavailable_count == 1:
+        return "Earn: PARTIAL — полный total недоступен"
+    suffix = " · PARTIAL" if "PARTIAL" in sources else ""
+    return _optional_source_line("Earn", snapshot.earn_value) + suffix
 
 
 def _value_text(value: object | None) -> str:

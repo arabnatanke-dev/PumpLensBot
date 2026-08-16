@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
+
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramNotFound
 from aiogram.types import InlineKeyboardMarkup, Message, ReplyKeyboardMarkup
@@ -29,7 +31,16 @@ async def show_or_edit_panel(
             select(UserRecord).where(UserRecord.telegram_user_id == telegram_user_id)
         )
         stored_message_id = user.telegram_panel_message_id if user is not None else None
-    target_id = None if force_send else message_id or stored_message_id
+    target_id = message_id or stored_message_id
+    if force_send:
+        if target_id is not None:
+            # Moving the screen is still useful when Telegram cannot delete the old one.
+            # Перенос карточки полезен, даже если Telegram не удалил старую.
+            with suppress(Exception):
+                await bot.delete_message(chat_id, target_id)
+        panel = await bot.send_message(chat_id, text, reply_markup=reply_markup)
+        await _save_panel_id(database, telegram_user_id, panel.message_id)
+        return panel.message_id
     if target_id is not None:
         try:
             # Telegram accepts only inline markup while editing. A persistent reply

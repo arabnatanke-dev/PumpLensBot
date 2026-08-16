@@ -259,6 +259,8 @@ class PortfolioSnapshotRecord(UUIDPrimaryKey, Base):
     )
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     spot_value: Mapped[Decimal] = mapped_column(Numeric(38, 18), default=0)
+    # Legacy column name; stores Binance USD-M totalMarginBalance (current equity).
+    # Старое имя колонки; хранит current equity из totalMarginBalance.
     futures_wallet: Mapped[Decimal] = mapped_column(Numeric(38, 18), default=0)
     available: Mapped[Decimal] = mapped_column(Numeric(38, 18), default=0)
     unrealized_pnl: Mapped[Decimal] = mapped_column(Numeric(38, 18), default=0)

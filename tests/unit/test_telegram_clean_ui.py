@@ -173,7 +173,9 @@ async def test_onboarding_edits_the_same_message(database: Database) -> None:
     assert bot.sent == []
 
 
-async def test_reply_button_is_deleted_and_opens_section(database: Database) -> None:
+async def test_reply_button_moves_screen_to_bottom_then_inline_edits_it(
+    database: Database,
+) -> None:
     await _user(database, panel_id=77)
     bot = FakeBot()
     message = cast(
@@ -194,12 +196,39 @@ async def test_reply_button_is_deleted_and_opens_section(database: Database) -> 
         ConnectSessionStore(),
         ServiceState(),
     )
-    assert bot.deleted == [(42, 66)]
-    assert bot.edits == [77]
-    assert bot.sent == []
+    assert bot.deleted == [(42, 66), (42, 77)]
+    assert bot.edits == []
+    assert bot.sent == [42]
+    async with database.session() as session:
+        user = await session.scalar(
+            select(UserRecord).where(UserRecord.telegram_user_id == 42)
+        )
+        assert user is not None and user.telegram_panel_message_id == 900
+
+    callback = cast(
+        Any,
+        SimpleNamespace(
+            data="screen:portfolio:spot",
+            from_user=SimpleNamespace(id=42),
+            message=SimpleNamespace(chat=SimpleNamespace(id=42), message_id=900),
+            answer=AsyncMock(),
+        ),
+    )
+    await clean_screen_callback(
+        callback,
+        cast(Bot, cast(Any, bot)),
+        database,
+        AppSettings(),
+        RuntimeSecrets(),
+        ConnectSessionStore(),
+        ServiceState(),
+        cast(Any, None),
+    )
+    assert bot.edits == [900]
+    assert bot.sent == [42]
 
 
-async def test_completed_start_updates_saved_content_screen(
+async def test_completed_start_sends_reply_keyboard_and_replaces_old_screen(
     database: Database,
 ) -> None:
     await _user(database, panel_id=77)
@@ -224,9 +253,51 @@ async def test_completed_start_updates_saved_content_screen(
         RuntimeSecrets(),
         AppSettings.model_validate({"onboarding": {"invite_only": False}}),
     )
-    assert bot.deleted == [(42, 67)]
-    assert bot.edits == [77]
-    assert bot.sent == []
+    assert bot.deleted == [(42, 67), (42, 77)]
+    assert bot.edits == []
+    assert bot.sent == [42]
+    assert bot.sent_markups == [main_reply_keyboard()]
+    async with database.session() as session:
+        user = await session.scalar(
+            select(UserRecord).where(UserRecord.telegram_user_id == 42)
+        )
+        assert user is not None and user.telegram_panel_message_id == 900
+
+
+async def test_reply_navigation_survives_old_screen_delete_failure(
+    database: Database,
+) -> None:
+    await _user(database, panel_id=77)
+    bot = FakeBot()
+
+    async def fail_delete(_chat_id: int, _message_id: int) -> None:
+        raise RuntimeError("cannot delete")
+
+    bot.delete_message = fail_delete  # type: ignore[method-assign]
+    message = cast(
+        Any,
+        SimpleNamespace(
+            from_user=SimpleNamespace(id=42),
+            chat=SimpleNamespace(id=42),
+            message_id=66,
+            text="💼 Портфель",
+        ),
+    )
+    await clean_reply_menu_handler(
+        message,
+        cast(Bot, cast(Any, bot)),
+        database,
+        AppSettings(),
+        RuntimeSecrets(),
+        ConnectSessionStore(),
+        ServiceState(),
+    )
+    assert bot.sent == [42]
+    async with database.session() as session:
+        user = await session.scalar(
+            select(UserRecord).where(UserRecord.telegram_user_id == 42)
+        )
+        assert user is not None and user.telegram_panel_message_id == 900
 
 
 async def test_portfolio_inline_tab_edits_the_saved_screen(database: Database) -> None:

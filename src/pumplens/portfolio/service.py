@@ -79,7 +79,14 @@ class PortfolioService:
 
         spot_rows, spot_value, partial = _parse_spot(spot, prices, account.id)
         position_rows = _parse_positions(positions, account.id)
-        futures_wallet = _decimal(futures.get("totalWalletBalance"))
+        # Binance USD-M Account Information V3 defines totalMarginBalance as current
+        # margin equity (wallet balance including unrealized PnL). Store that single
+        # documented field in the legacy futures_wallet column, and never add
+        # totalUnrealizedProfit again. / Account Information V3 определяет
+        # totalMarginBalance как текущий equity с unrealized PnL; второй раз PnL не
+        # прибавляем. Docs: https://developers.binance.com/docs/derivatives/
+        # usds-margined-futures/account/rest-api-v3/Account-Information-V3
+        futures_wallet = _decimal(futures.get("totalMarginBalance"))
         available = _decimal(futures.get("availableBalance"))
         unrealized = _decimal(futures.get("totalUnrealizedProfit"))
         source_status = {

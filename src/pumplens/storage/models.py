@@ -87,6 +87,8 @@ class SignalRecord(UUIDPrimaryKey, Timestamped, Base):
     direction: Mapped[str] = mapped_column(String(8), nullable=False)
     state: Mapped[str] = mapped_column(String(24), nullable=False)
     score: Mapped[float] = mapped_column(Numeric(6, 2), nullable=False)
+    entry_quality: Mapped[float | None] = mapped_column(Numeric(6, 2))
+    final_decision: Mapped[str | None] = mapped_column(String(48))
     start_price: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
     trigger_price: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
     invalidation: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
@@ -110,6 +112,10 @@ class SignalFeatureRecord(UUIDPrimaryKey, Base):
     features_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     penalties_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     raw_score: Mapped[float] = mapped_column(Numeric(6, 2), nullable=False)
+    stage_c_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    entry_quality: Mapped[float | None] = mapped_column(Numeric(6, 2))
+    final_decision: Mapped[str | None] = mapped_column(String(48))
+    reason_codes_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
 
 
 class SignalEventRecord(UUIDPrimaryKey, Base):
@@ -138,6 +144,7 @@ class SignalOutcomeRecord(UUIDPrimaryKey, Base):
     mfe: Mapped[float | None] = mapped_column(Numeric(8, 4))
     mae: Mapped[float | None] = mapped_column(Numeric(8, 4))
     hit_rule: Mapped[str | None] = mapped_column(String(32))
+    last_sampled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     evaluated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 

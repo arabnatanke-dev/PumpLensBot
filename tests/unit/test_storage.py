@@ -178,7 +178,7 @@ async def test_watch_transition_creates_one_user_delivery(database: Database) ->
         assert deliveries[0].stage == SignalState.WATCH.value
 
 
-def test_migrations_upgrade_through_reply_menu_anchor(
+def test_migrations_upgrade_through_stage_c(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -199,6 +199,17 @@ def test_migrations_upgrade_through_reply_menu_anchor(
             row[1]
             for row in connection.execute("PRAGMA table_info(portfolio_snapshots)").fetchall()
         }
+        signal_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(signals)").fetchall()
+        }
+        feature_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(signal_features)").fetchall()
+        }
+        outcome_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(signal_outcomes)").fetchall()
+        }
         tables = {
             row[0]
             for row in connection.execute(
@@ -209,10 +220,18 @@ def test_migrations_upgrade_through_reply_menu_anchor(
     assert {"delete_after", "deleted_at", "cleanup_error"} <= delivery_columns
     assert {"earn_value", "funding_value", "source_status_json"} <= snapshot_columns
     assert {"earn_holdings", "funding_holdings"} <= tables
-    assert revision == ("0007_telegram_reply_menu_anchor",)
+    assert {"entry_quality", "final_decision"} <= signal_columns
+    assert {
+        "stage_c_json",
+        "entry_quality",
+        "final_decision",
+        "reason_codes_json",
+    } <= feature_columns
+    assert "last_sampled_at" in outcome_columns
+    assert revision == ("0008_stage_c_entry_analysis",)
 
 
-def test_existing_0006_database_upgrades_to_0007(
+def test_existing_0006_database_upgrades_to_stage_c(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -233,6 +252,49 @@ def test_existing_0006_database_upgrades_to_0007(
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         }
-    assert revision == ("0007_telegram_reply_menu_anchor",)
+        signal_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(signals)").fetchall()
+        }
+    assert revision == ("0008_stage_c_entry_analysis",)
     assert "telegram_menu_message_id" in user_columns
     assert {"earn_holdings", "funding_holdings"} <= tables
+    assert {"entry_quality", "final_decision"} <= signal_columns
+
+
+def test_existing_0007_database_upgrades_to_stage_c(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = Path(__file__).parents[2]
+    database_path = tmp_path / "migration-from-0007.sqlite"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{database_path}")
+    config = Config(root / "alembic.ini")
+    command.upgrade(config, "0007_telegram_reply_menu_anchor")
+    # 0001 uses current metadata in this legacy project, so remove new columns to
+    # reproduce a real production schema that stopped at 0007.
+    # 0001 использует текущие metadata; удаляем новые колонки для честного пути 0007.
+    with sqlite3.connect(database_path) as connection:
+        for table, column in (
+            ("signals", "entry_quality"),
+            ("signals", "final_decision"),
+            ("signal_features", "stage_c_json"),
+            ("signal_features", "entry_quality"),
+            ("signal_features", "final_decision"),
+            ("signal_features", "reason_codes_json"),
+            ("signal_outcomes", "last_sampled_at"),
+        ):
+            connection.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+    command.upgrade(config, "head")
+    with sqlite3.connect(database_path) as connection:
+        revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
+        feature_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(signal_features)").fetchall()
+        }
+        outcome_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(signal_outcomes)").fetchall()
+        }
+    assert revision == ("0008_stage_c_entry_analysis",)
+    assert {"stage_c_json", "entry_quality", "final_decision"} <= feature_columns
+    assert "last_sampled_at" in outcome_columns

@@ -82,7 +82,7 @@ class StageBManager:
 def score_stage_b(snapshot: FeatureSnapshot, max_spread_pct: float) -> FeatureSnapshot:
     """Replace coarse flow data with aggTrade/depth/OI confirmation. / Глубокий score."""
 
-    if not snapshot.deep_data_ready:
+    if not (snapshot.trade_data_ready or snapshot.deep_data_ready):
         return snapshot
 
     pressure = snapshot.agg_buy_pressure
@@ -91,17 +91,19 @@ def score_stage_b(snapshot: FeatureSnapshot, max_spread_pct: float) -> FeatureSn
     scored = score_stage_a(deep_input, max_spread_pct)
     sign = 1.0 if snapshot.direction is Direction.LONG else -1.0
     directional_oi = sign * snapshot.oi_delta_pct
-    oi_points = 12.0 * clamp01(directional_oi / 1.0)
+    oi_ready = snapshot.oi_data_ready or snapshot.deep_data_ready
+    oi_points = 12.0 * clamp01(directional_oi / 1.0) if oi_ready else 0.0
     directional_depth = sign * snapshot.depth_imbalance
-    depth_points = 4.0 * clamp01(directional_depth / 0.35)
+    depth_ready = snapshot.depth_data_ready or snapshot.deep_data_ready
+    depth_points = 4.0 * clamp01(directional_depth / 0.35) if depth_ready else 0.0
 
     reasons = list(scored.reasons)
     penalties = list(scored.penalties)
-    if directional_oi > 0:
+    if oi_ready and directional_oi > 0:
         reasons.append(f"OI {directional_oi:+.2f}%")
-    elif directional_oi < -0.5:
+    elif oi_ready and directional_oi < -0.5:
         penalties.append("OI divergence / расхождение OI")
-    if directional_depth > 0.1:
+    if depth_ready and directional_depth > 0.1:
         reasons.append(f"depth {directional_depth:+.2f}")
 
     return replace(

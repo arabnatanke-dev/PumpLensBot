@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import structlog
-from sqlalchemy import or_, select
+from sqlalchemy import and_, func, or_, select
 
 from pumplens.binance.public_rest import BinancePublicClient
 from pumplens.domain.enums import Direction
@@ -43,6 +43,7 @@ class SignalOutcomeEvaluator:
 
     async def evaluate_once(self, client: BinancePublicClient) -> None:
         now = datetime.now(UTC)
+        observed_at = func.coalesce(SignalRecord.watch_at, SignalRecord.candidate_at)
         async with self._database.session() as session:
             rows = (
                 await session.execute(
@@ -52,15 +53,25 @@ class SignalOutcomeEvaluator:
                         SignalOutcomeRecord.signal_id == SignalRecord.id,
                     )
                     .where(
-                        SignalRecord.trigger_price.is_not(None),
-                        SignalRecord.watch_at.is_not(None),
-                        SignalRecord.watch_at <= now - timedelta(minutes=5),
+                        SignalRecord.start_price.is_not(None),
+                        or_(
+                            SignalRecord.watch_at.is_not(None),
+                            SignalRecord.final_decision.is_not(None),
+                        ),
+                        observed_at <= now - timedelta(minutes=5),
                         or_(
                             SignalOutcomeRecord.id.is_(None),
-                            SignalOutcomeRecord.evaluated_at.is_(None),
+                            and_(
+                                SignalOutcomeRecord.evaluated_at.is_(None),
+                                or_(
+                                    SignalOutcomeRecord.last_sampled_at.is_(None),
+                                    SignalOutcomeRecord.last_sampled_at
+                                    <= now - timedelta(minutes=5),
+                                ),
+                            ),
                         ),
                     )
-                    .order_by(SignalRecord.watch_at)
+                    .order_by(observed_at)
                     .limit(25)
                 )
             ).all()
@@ -74,8 +85,9 @@ class SignalOutcomeEvaluator:
         existing: SignalOutcomeRecord | None,
         now: datetime,
     ) -> None:
-        started = _aware(signal.watch_at)
-        if started is None or signal.trigger_price is None:
+        started = _aware(signal.watch_at or signal.candidate_at)
+        entry_price = signal.trigger_price or signal.start_price
+        if started is None or entry_price is None:
             return
         elapsed_minutes = (now - started).total_seconds() / 60.0
         end = min(now, started + timedelta(minutes=61))
@@ -91,7 +103,7 @@ class SignalOutcomeEvaluator:
         direction = Direction(signal.direction)
         result = evaluate_kline_outcome(
             direction,
-            float(signal.trigger_price),
+            float(entry_price),
             closed,
         )
         prices = {
@@ -115,6 +127,7 @@ class SignalOutcomeEvaluator:
             row.mfe = result.mfe_pct
             row.mae = result.mae_pct
             row.hit_rule = result.hit_rule
+            row.last_sampled_at = now
             if elapsed_minutes >= 60:
                 row.evaluated_at = now
 

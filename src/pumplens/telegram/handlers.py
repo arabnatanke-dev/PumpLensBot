@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 from typing import cast
 from urllib.parse import quote
 
@@ -23,6 +24,7 @@ from pumplens.storage.models import (
     ExchangeAccountRecord,
     PortfolioSnapshotRecord,
     PositionRecord,
+    SignalFeatureRecord,
     SignalOutcomeRecord,
     SignalRecord,
     SpotHoldingRecord,
@@ -45,6 +47,7 @@ from pumplens.telegram.keyboards import (
     top_level_keyboard,
     welcome_keyboard,
 )
+from pumplens.telegram.notifications import format_signal_explanation
 from pumplens.webapp.sessions import ConnectSessionStore
 
 router = Router(name="pumplens")
@@ -231,7 +234,35 @@ async def help_handler(message: Message) -> None:
     await message.answer(
         "PumpLens наблюдает рынок и не открывает сделки. Score — сила совпадения "
         "признаков, а не вероятность прибыли. Команды: /top, /status, /portfolio, "
-        "/positions, /binance, /history, /stats, /early_stats."
+        "/positions, /binance, /history, /stats, /early_stats, /why SYMBOL."
+    )
+
+
+@router.message(Command("why"))
+async def why_handler(message: Message, database: Database) -> None:
+    raw = (message.text or "").split(maxsplit=1)
+    if len(raw) != 2:
+        await message.answer("Использование: /why BTCUSDT")
+        return
+    symbol = raw[1].strip().upper()
+    async with database.session() as session:
+        signal = await session.scalar(
+            select(SignalRecord)
+            .where(SignalRecord.symbol == symbol)
+            .order_by(SignalRecord.created_at.desc())
+            .limit(1)
+        )
+        if signal is None:
+            await message.answer(f"Сигнал {html.escape(symbol)} не найден.")
+            return
+        feature = await session.scalar(
+            select(SignalFeatureRecord)
+            .where(SignalFeatureRecord.signal_id == signal.id)
+            .order_by(SignalFeatureRecord.ts.desc())
+            .limit(1)
+        )
+    await message.answer(
+        format_signal_explanation(signal, feature.features_json if feature else {})
     )
 
 

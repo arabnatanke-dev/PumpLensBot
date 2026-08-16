@@ -67,6 +67,57 @@ late:
   return_15m_pct: 15.0
   range_1m_pct: 6.0
 
+# Deep entry validation runs only for the strongest Stage B candidates.
+# Глубокая проверка входа запускается только для лучших кандидатов Stage B.
+stage_c:
+  enabled: true
+  require_for_watch: true
+  max_candidates: 8
+  structure_lookback: 120
+  pivot_window: 2
+  level_lookback: 120
+  level_cluster_tolerance_pct: 0.25
+  level_min_touches: 1
+  retest_tolerance_pct: 0.20
+  atr_period: 14
+  late_atr_multiplier: 3.0
+  late_score_threshold: 70
+  exhaustion_threshold: 70
+  min_rr: 1.5
+  min_entry_quality: 55
+  max_distance_from_vwap_pct: 3.0
+  min_room_pct: 0.50
+  min_volume_confirmation: 2.5
+  min_trade_confirmation: 2.0
+  min_pressure_confirmation: 0.58
+  healthy_spread_pct: 0.15
+  min_depth_imbalance: 0.10
+  min_oi_delta_pct: 0.05
+  max_opposing_wick_ratio: 0.45
+  volatility_buffer_atr: 0.20
+  target_atr_multiplier: 2.0
+  compression_ratio: 0.70
+  expansion_ratio: 1.50
+  weights:
+    base_quality: 35
+    structure_aligned: 12
+    breakout_confirmed: 10
+    retest_held: 14
+    volume_confirmation: 6
+    trades_confirmation: 5
+    pressure_confirmation: 7
+    oi_confirmation: 4
+    spread_healthy: 4
+    depth_supportive: 4
+    room_available: 7
+    rr_acceptable: 8
+    late_penalty: 28
+    exhaustion_penalty: 24
+    failed_breakout_penalty: 30
+    structure_conflict_penalty: 20
+    vwap_distance_penalty: 10
+    opposing_wick_penalty: 8
+
 oi:
   poll_seconds: 30
 

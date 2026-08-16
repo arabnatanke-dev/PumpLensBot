@@ -31,6 +31,7 @@ class SignalRepository:
         self._session = session
 
     async def persist_transition(self, transition: SignalTransition) -> uuid.UUID:
+        analysis = transition.snapshot.entry_analysis
         statement = select(SignalRecord).where(
             SignalRecord.symbol == transition.symbol,
             SignalRecord.direction == transition.direction.value,
@@ -43,6 +44,10 @@ class SignalRepository:
                 direction=transition.direction.value,
                 state=transition.to_state.value,
                 score=transition.snapshot.score,
+                entry_quality=analysis.entry_quality if analysis is not None else None,
+                final_decision=(
+                    analysis.final_decision.value if analysis is not None else None
+                ),
                 start_price=_decimal(transition.levels.start_price)
                 if transition.levels
                 else _decimal(transition.snapshot.last_price),
@@ -53,6 +58,9 @@ class SignalRepository:
 
         signal.state = transition.to_state.value
         signal.score = transition.snapshot.score
+        if analysis is not None:
+            signal.entry_quality = analysis.entry_quality
+            signal.final_decision = analysis.final_decision.value
         if transition.to_state is SignalState.EARLY:
             signal.early_price = _decimal(transition.snapshot.last_price)
             signal.early_liquidity_tier = transition.liquidity_tier
@@ -80,6 +88,12 @@ class SignalRepository:
                 features_json=_snapshot_dict(transition),
                 penalties_json=list(transition.snapshot.penalties),
                 raw_score=transition.snapshot.score,
+                stage_c_json=dataclasses.asdict(analysis) if analysis is not None else None,
+                entry_quality=analysis.entry_quality if analysis is not None else None,
+                final_decision=(
+                    analysis.final_decision.value if analysis is not None else None
+                ),
+                reason_codes_json=list(analysis.reason_codes) if analysis is not None else [],
             )
         )
         await self._session.flush()
@@ -100,6 +114,10 @@ class SignalRepository:
             SignalState.TOO_LATE,
             SignalState.COOLDOWN,
         }:
+            if transition.to_state is SignalState.TOO_LATE and signal.candidate_at is None:
+                # Stage C can reject a late setup before WATCH; retain its observation time.
+                # Stage C может отклонить поздний setup до WATCH; сохраняем время наблюдения.
+                signal.candidate_at = transition.timestamp
             signal.terminal_at = transition.timestamp
             if transition.to_state is SignalState.COOLDOWN:
                 signal.is_active = False

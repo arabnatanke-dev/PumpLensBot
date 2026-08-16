@@ -107,6 +107,9 @@ class FeatureEngine:
             bid_depth,
             ask_depth,
             oi_delta,
+            trade_ready,
+            depth_ready,
+            oi_ready,
             deep_ready,
         ) = self._deep_features(buffer, now)
         required_streams = (
@@ -151,6 +154,9 @@ class FeatureEngine:
             bid_depth_usdt=bid_depth,
             ask_depth_usdt=ask_depth,
             oi_delta_pct=oi_delta,
+            trade_data_ready=trade_ready,
+            depth_data_ready=depth_ready,
+            oi_data_ready=oi_ready,
             deep_data_ready=deep_ready,
             data_quality=quality,
         )
@@ -234,7 +240,7 @@ class FeatureEngine:
         self,
         buffer: SymbolBuffer,
         now: float,
-    ) -> tuple[float, float, float, float, float, float, bool]:
+    ) -> tuple[float, float, float, float, float, float, bool, bool, bool, bool]:
         buckets = list(buffer.trade_buckets)
         recent = buckets[-60:]
         total_buy = sum(bucket.buy_quote for bucket in recent)
@@ -273,14 +279,22 @@ class FeatureEngine:
             if old is not None:
                 oi_delta = pct_return(latest.open_interest, old.open_interest)
 
-        deep_ready = (
-            total_quote > 0
-            and buffer.depth is not None
-            and bool(oi_points)
-            and _is_fresh(buffer.last_trade_at, now, self._stale_after_seconds)
-            and _is_fresh(buffer.last_depth_at, now, self._stale_after_seconds)
-            and _is_fresh(buffer.last_oi_at, now, self._oi_stale_after_seconds)
+        trade_ready = total_quote > 0 and _is_fresh(
+            buffer.last_trade_at,
+            now,
+            self._stale_after_seconds,
         )
+        depth_ready = buffer.depth is not None and _is_fresh(
+            buffer.last_depth_at,
+            now,
+            self._stale_after_seconds,
+        )
+        oi_ready = bool(oi_points) and _is_fresh(
+            buffer.last_oi_at,
+            now,
+            self._oi_stale_after_seconds,
+        )
+        deep_ready = trade_ready and depth_ready and oi_ready
         return (
             agg_pressure,
             agg_trade_ratio,
@@ -288,6 +302,9 @@ class FeatureEngine:
             bid_depth,
             ask_depth,
             oi_delta,
+            trade_ready,
+            depth_ready,
+            oi_ready,
             deep_ready,
         )
 

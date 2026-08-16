@@ -6,7 +6,14 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from pumplens.domain.enums import DataQuality, Direction
+from pumplens.domain.enums import (
+    BreakoutState,
+    DataQuality,
+    Direction,
+    EntryDecision,
+    MarketStructure,
+    RetestState,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +141,69 @@ class TradeBucket:
 
 
 @dataclass(frozen=True, slots=True)
+class PriceZone:
+    low: float
+    high: float
+    touches: int
+    strength: float
+
+    @property
+    def midpoint(self) -> float:
+        return (self.low + self.high) / 2.0
+
+
+@dataclass(frozen=True, slots=True)
+class TimeframeStructure:
+    timeframe: str
+    structure: MarketStructure
+    pattern: str
+    last_swing_high: float | None
+    last_swing_low: float | None
+    compression: bool
+    expansion: bool
+    bos_direction: Direction | None
+
+
+@dataclass(frozen=True, slots=True)
+class EntryAnalysis:
+    signal_score: float
+    entry_quality: float
+    structure_1m: TimeframeStructure
+    structure_5m: TimeframeStructure
+    structure_15m: TimeframeStructure
+    trend_alignment_score: float
+    nearest_support: PriceZone | None
+    nearest_resistance: PriceZone | None
+    distance_to_support_pct: float | None
+    distance_to_resistance_pct: float | None
+    room_up_pct: float | None
+    room_down_pct: float | None
+    breakout_state: BreakoutState
+    breakout_level: PriceZone | None
+    breakout_detected: bool
+    retest_state: RetestState
+    retest_started: bool
+    retest_held: bool
+    retest_failed: bool
+    atr_pct: float
+    distance_from_vwap_pct: float
+    late_score: float
+    late: bool
+    exhaustion_score: float
+    entry_reference: float
+    invalidation_price: float
+    potential_target: float
+    risk_pct: float
+    reward_pct: float
+    rr: float | None
+    final_decision: EntryDecision
+    reason_codes: tuple[str, ...]
+    positive_reasons: tuple[str, ...]
+    negative_reasons: tuple[str, ...]
+    optional_data_missing: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class FeatureSnapshot:
     symbol: str
     timestamp: datetime
@@ -161,12 +231,16 @@ class FeatureSnapshot:
     bid_depth_usdt: float = 0.0
     ask_depth_usdt: float = 0.0
     oi_delta_pct: float = 0.0
+    trade_data_ready: bool = False
+    depth_data_ready: bool = False
+    oi_data_ready: bool = False
     deep_data_ready: bool = False
     score: float = 0.0
     data_quality: DataQuality = DataQuality.WARMING_UP
     reasons: tuple[str, ...] = ()
     penalties: tuple[str, ...] = ()
     too_late: bool = False
+    entry_analysis: EntryAnalysis | None = None
 
     @classmethod
     def empty(cls, symbol: str) -> FeatureSnapshot:

@@ -17,6 +17,9 @@ def test_repository_settings_are_valid() -> None:
     assert settings.binance.websocket_streams_per_connection <= 900
     assert settings.telegram.signal_ttl_hours == 47
     assert settings.telegram.cleanup_scan_seconds == 60
+    assert settings.stage_c.require_for_watch is True
+    assert settings.stage_c.max_candidates == 8
+    assert settings.stage_c.min_rr == 1.5
 
 
 def test_score_thresholds_must_be_monotonic() -> None:

@@ -138,6 +138,65 @@ class LateSettings(StrictModel):
     range_1m_pct: PositiveFloat = 6.0
 
 
+class StageCWeightSettings(StrictModel):
+    base_quality: float = Field(default=35.0, ge=0.0, le=100.0)
+    structure_aligned: PositiveFloat = 12.0
+    breakout_confirmed: PositiveFloat = 10.0
+    retest_held: PositiveFloat = 14.0
+    volume_confirmation: PositiveFloat = 6.0
+    trades_confirmation: PositiveFloat = 5.0
+    pressure_confirmation: PositiveFloat = 7.0
+    oi_confirmation: PositiveFloat = 4.0
+    spread_healthy: PositiveFloat = 4.0
+    depth_supportive: PositiveFloat = 4.0
+    room_available: PositiveFloat = 7.0
+    rr_acceptable: PositiveFloat = 8.0
+    late_penalty: PositiveFloat = 28.0
+    exhaustion_penalty: PositiveFloat = 24.0
+    failed_breakout_penalty: PositiveFloat = 30.0
+    structure_conflict_penalty: PositiveFloat = 20.0
+    vwap_distance_penalty: PositiveFloat = 10.0
+    opposing_wick_penalty: PositiveFloat = 8.0
+
+
+class StageCSettings(StrictModel):
+    enabled: bool = True
+    require_for_watch: bool = False
+    max_candidates: PositiveInt = Field(default=8, le=30)
+    structure_lookback: PositiveInt = Field(default=120, ge=30, le=180)
+    pivot_window: PositiveInt = Field(default=2, le=10)
+    level_lookback: PositiveInt = Field(default=120, ge=20, le=180)
+    level_cluster_tolerance_pct: PositiveFloat = 0.25
+    level_min_touches: PositiveInt = Field(default=1, le=10)
+    retest_tolerance_pct: PositiveFloat = 0.20
+    atr_period: PositiveInt = Field(default=14, ge=5, le=60)
+    late_atr_multiplier: PositiveFloat = 3.0
+    late_score_threshold: float = Field(default=70.0, ge=0.0, le=100.0)
+    exhaustion_threshold: float = Field(default=70.0, ge=0.0, le=100.0)
+    min_rr: PositiveFloat = 1.5
+    min_entry_quality: float = Field(default=55.0, ge=0.0, le=100.0)
+    max_distance_from_vwap_pct: PositiveFloat = 3.0
+    min_room_pct: PositiveFloat = 0.50
+    min_volume_confirmation: PositiveFloat = 2.5
+    min_trade_confirmation: PositiveFloat = 2.0
+    min_pressure_confirmation: float = Field(default=0.58, ge=0.5, le=1.0)
+    healthy_spread_pct: PositiveFloat = 0.15
+    min_depth_imbalance: float = Field(default=0.10, ge=0.0, le=1.0)
+    min_oi_delta_pct: float = Field(default=0.05, ge=0.0)
+    max_opposing_wick_ratio: float = Field(default=0.45, gt=0.0, lt=1.0)
+    volatility_buffer_atr: PositiveFloat = 0.20
+    target_atr_multiplier: PositiveFloat = 2.0
+    compression_ratio: float = Field(default=0.70, gt=0.0, lt=1.0)
+    expansion_ratio: PositiveFloat = 1.50
+    weights: StageCWeightSettings = StageCWeightSettings()
+
+    @model_validator(mode="after")
+    def validate_stage_c(self) -> StageCSettings:
+        if self.pivot_window * 2 + 1 >= self.structure_lookback:
+            raise ValueError("stage_c pivot window must fit structure lookback")
+        return self
+
+
 class OpenInterestSettings(StrictModel):
     poll_seconds: PositiveInt = 30
 
@@ -189,6 +248,7 @@ class AppSettings(StrictModel):
     scanner: ScannerSettings = ScannerSettings()
     early: EarlySettings = EarlySettings()
     late: LateSettings = LateSettings()
+    stage_c: StageCSettings = StageCSettings()
     oi: OpenInterestSettings = OpenInterestSettings()
     onboarding: OnboardingSettings = OnboardingSettings()
     portfolio: PortfolioSettings = PortfolioSettings()

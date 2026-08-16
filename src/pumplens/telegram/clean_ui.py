@@ -31,8 +31,9 @@ from pumplens.telegram.keyboards import (
     binance_keyboard,
     consent_keyboard,
     directions_keyboard,
+    main_reply_keyboard,
     panel_back_keyboard,
-    panel_home_keyboard,
+    panel_binance_keyboard,
     panel_settings_keyboard,
     profile_keyboard,
     welcome_keyboard,
@@ -52,8 +53,6 @@ async def clean_start_handler(
     database: Database,
     runtime: RuntimeSecrets,
     settings: AppSettings,
-    connect_sessions: ConnectSessionStore,
-    service_state: ServiceState,
 ) -> None:
     telegram_user = message.from_user
     if telegram_user is None:
@@ -76,28 +75,23 @@ async def clean_start_handler(
         return
     await delete_command_best_effort(bot, message)
     if complete:
-        text, keyboard = await panel_content(
-            "home",
-            telegram_user.id,
-            database,
-            settings,
-            runtime,
-            connect_sessions,
-            service_state,
+        await bot.send_message(
+            message.chat.id,
+            "<b>🤖 PumpLens</b>\nВыберите раздел в постоянном меню.",
+            reply_markup=main_reply_keyboard(),
         )
-    else:
-        text = (
-            "👋 PumpLens замечает необычное движение и объясняет причины. "
-            "Он не открывает сделки."
-        )
-        keyboard = welcome_keyboard()
+        return
+    text = (
+        "👋 PumpLens замечает необычное движение и объясняет причины. "
+        "Он не открывает сделки."
+    )
     await show_or_edit_panel(
         bot,
         database,
         telegram_user_id=telegram_user.id,
         chat_id=message.chat.id,
         text=text,
-        reply_markup=keyboard,
+        reply_markup=welcome_keyboard(),
     )
 
 
@@ -217,10 +211,6 @@ async def clean_skip_binance(
     callback: CallbackQuery,
     bot: Bot,
     database: Database,
-    settings: AppSettings,
-    runtime: RuntimeSecrets,
-    connect_sessions: ConnectSessionStore,
-    service_state: ServiceState,
 ) -> None:
     await callback.answer()
     async with database.session() as session, session.begin():
@@ -228,16 +218,18 @@ async def clean_skip_binance(
         if user is None:
             return
         onboarding.complete(user)
-    text, keyboard = await panel_content(
-        "home",
-        callback.from_user.id,
-        database,
-        settings,
-        runtime,
-        connect_sessions,
-        service_state,
+    if callback.message is None:
+        return
+    await bot.edit_message_text(
+        "✅ Onboarding завершён. Используйте постоянное меню ниже.",
+        chat_id=callback.message.chat.id,
+        message_id=callback.message.message_id,
     )
-    await _edit_callback(callback, bot, database, text, keyboard)
+    await bot.send_message(
+        callback.message.chat.id,
+        "<b>🤖 PumpLens</b>\nВыберите раздел.",
+        reply_markup=main_reply_keyboard(),
+    )
 
 
 @router.callback_query(F.data.startswith("panel:"))
@@ -251,7 +243,7 @@ async def clean_panel_callback(
     service_state: ServiceState,
 ) -> None:
     await callback.answer()
-    data = callback.data or "panel:home"
+    data = callback.data or "panel:status"
     if data.startswith("panel:profile:"):
         await _set_profile(database, callback.from_user.id, data.rsplit(":", 1)[1])
         section = "settings"
@@ -260,8 +252,9 @@ async def clean_panel_callback(
         section = "settings"
     else:
         section = data.split(":", 1)[1]
-        if section == "refresh":
-            section = "home"
+        if section in {"home", "refresh"}:
+            await _show_menu_hint(callback, bot)
+            return
     text, keyboard = await panel_content(
         section,
         callback.from_user.id,
@@ -271,7 +264,40 @@ async def clean_panel_callback(
         connect_sessions,
         service_state,
     )
-    await _edit_callback(callback, bot, database, text, keyboard)
+    await _edit_inline_callback(callback, bot, text, keyboard)
+
+
+@router.callback_query(F.data == "menu:back")
+async def clean_menu_back(callback: CallbackQuery, bot: Bot) -> None:
+    await callback.answer()
+    await _show_menu_hint(callback, bot)
+
+
+async def _show_menu_hint(callback: CallbackQuery, bot: Bot) -> None:
+    if callback.message is None:
+        return
+    await bot.edit_message_text(
+        "Главное меню доступно внизу чата.",
+        chat_id=callback.message.chat.id,
+        message_id=callback.message.message_id,
+        reply_markup=None,
+    )
+
+
+async def _edit_inline_callback(
+    callback: CallbackQuery,
+    bot: Bot,
+    text: str,
+    keyboard: InlineKeyboardMarkup,
+) -> None:
+    if callback.message is None:
+        return
+    await bot.edit_message_text(
+        text,
+        chat_id=callback.message.chat.id,
+        message_id=callback.message.message_id,
+        reply_markup=keyboard,
+    )
 
 
 async def _edit_callback(
@@ -309,7 +335,7 @@ async def clean_panel_command(
     if message.from_user is None or not message.text:
         return
     command = message.text.split()[0].split("@", 1)[0].lstrip("/")
-    section = {"early_stats": "early", "binance": "settings"}.get(command, command)
+    section = {"early_stats": "early"}.get(command, command)
     await delete_command_best_effort(bot, message)
     text, keyboard = await panel_content(
         section,
@@ -320,14 +346,46 @@ async def clean_panel_command(
         connect_sessions,
         service_state,
     )
-    await show_or_edit_panel(
-        bot,
-        database,
-        telegram_user_id=message.from_user.id,
-        chat_id=message.chat.id,
-        text=text,
+    await bot.send_message(
+        message.chat.id,
+        text,
         reply_markup=keyboard,
     )
+
+
+REPLY_MENU_SECTIONS = {
+    "💼 Портфель": "portfolio",
+    "📈 Сигналы": "history",
+    "📊 Позиции": "positions",
+    "🧪 EARLY": "early",
+    "⚙️ Настройки": "settings",
+    "🔗 Binance": "binance",
+}
+
+
+@router.message(F.text.in_(set(REPLY_MENU_SECTIONS)))
+async def clean_reply_menu_handler(
+    message: Message,
+    bot: Bot,
+    database: Database,
+    settings: AppSettings,
+    runtime: RuntimeSecrets,
+    connect_sessions: ConnectSessionStore,
+    service_state: ServiceState,
+) -> None:
+    if message.from_user is None or message.text is None:
+        return
+    await delete_command_best_effort(bot, message)
+    text, keyboard = await panel_content(
+        REPLY_MENU_SECTIONS[message.text],
+        message.from_user.id,
+        database,
+        settings,
+        runtime,
+        connect_sessions,
+        service_state,
+    )
+    await bot.send_message(message.chat.id, text, reply_markup=keyboard)
 
 
 async def panel_content(
@@ -339,23 +397,6 @@ async def panel_content(
     connect_sessions: ConnectSessionStore,
     service_state: ServiceState,
 ) -> tuple[str, InlineKeyboardMarkup]:
-    if section == "home":
-        async with database.session() as session:
-            user = await _user_by_telegram(session, telegram_user_id)
-            account = await _account_for_user(session, user.id) if user else None
-        scanner = service_state.status()
-        scanner_label = "🔴 STALE" if scanner.stale else "🟢 OK"
-        binance_label = (
-            "🟢 Connected"
-            if account is not None and account.status != "DISCONNECTED"
-            else "⚪ Not connected"
-        )
-        early_label = "🟡 Shadow" if settings.early.shadow_mode else "🟢 Active"
-        return (
-            "<b>🤖 PumpLens</b>\n\n"
-            f"Scanner: {scanner_label}\nBinance: {binance_label}\nEARLY: {early_label}",
-            panel_home_keyboard(),
-        )
     if section == "status":
         status = service_state.status()
         state = "STALE" if status.stale else "OK"
@@ -407,6 +448,30 @@ async def panel_content(
             panel_settings_keyboard(
                 profile=profile,
                 directions=directions,
+                connected=connected,
+                connect_url=_connect_url(runtime, connect_sessions, telegram_user_id),
+            ),
+        )
+    if section == "binance":
+        async with database.session() as session:
+            user = await _user_by_telegram(session, telegram_user_id)
+            account = await _account_for_user(session, user.id) if user else None
+        connected = account is not None and account.status != "DISCONNECTED"
+        if connected and account is not None:
+            sync = (
+                account.last_sync_at.strftime("%d.%m %H:%M UTC")
+                if account.last_sync_at
+                else "ожидается"
+            )
+            text = (
+                f"<b>🔗 Binance</b>\nСтатус: {html.escape(account.status)}\n"
+                f"Ключ: ****{html.escape(account.key_last4)}\nСинхронизация: {sync}"
+            )
+        else:
+            text = "<b>🔗 Binance</b>\nRead-only аккаунт не подключён."
+        return (
+            text,
+            panel_binance_keyboard(
                 connected=connected,
                 connect_url=_connect_url(runtime, connect_sessions, telegram_user_id),
             ),

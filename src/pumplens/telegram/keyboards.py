@@ -1,6 +1,12 @@
 """Inline onboarding keyboards. / Inline-клавиатуры регистрации."""
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    WebAppInfo,
+)
 
 
 def welcome_keyboard() -> InlineKeyboardMarkup:
@@ -95,30 +101,32 @@ def disconnect_confirm_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def panel_home_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+def main_reply_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
             [
-                InlineKeyboardButton(text="📡 Статус", callback_data="panel:status"),
-                InlineKeyboardButton(text="💼 Портфель", callback_data="panel:portfolio"),
+                KeyboardButton(text="💼 Портфель"),
+                KeyboardButton(text="📈 Сигналы"),
             ],
             [
-                InlineKeyboardButton(text="📊 Позиции", callback_data="panel:positions"),
-                InlineKeyboardButton(text="🧪 EARLY", callback_data="panel:early"),
+                KeyboardButton(text="📊 Позиции"),
+                KeyboardButton(text="🧪 EARLY"),
             ],
             [
-                InlineKeyboardButton(text="📈 История", callback_data="panel:history"),
-                InlineKeyboardButton(text="⚙️ Настройки", callback_data="panel:settings"),
+                KeyboardButton(text="⚙️ Настройки"),
+                KeyboardButton(text="🔗 Binance"),
             ],
-            [InlineKeyboardButton(text="🔄 Обновить", callback_data="panel:refresh")],
-        ]
+        ],
+        is_persistent=True,
+        resize_keyboard=True,
+        input_field_placeholder="Выберите раздел PumpLens",
     )
 
 
 def panel_back_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="panel:home")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:back")],
         ]
     )
 
@@ -174,5 +182,27 @@ def panel_settings_keyboard(
                 )
             ]
         )
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="panel:home")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def panel_binance_keyboard(
+    *,
+    connected: bool,
+    connect_url: str | None,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if connect_url:
+        label = "🔄 Переподключить Binance" if connected else "🔗 Подключить Binance"
+        rows.append([InlineKeyboardButton(text=label, web_app=WebAppInfo(url=connect_url))])
+    if connected:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="Отключить Binance",
+                    callback_data="binance:disconnect",
+                )
+            ]
+        )
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

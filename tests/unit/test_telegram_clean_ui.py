@@ -9,9 +9,12 @@ from typing import Any, cast
 import pytest
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.filters import CommandObject
 from aiogram.methods import DeleteMessage, EditMessageText
 from sqlalchemy import select
 
+from pumplens.config import AppSettings, RuntimeSecrets
+from pumplens.service_state import ServiceState
 from pumplens.storage.db import Database
 from pumplens.storage.models import (
     Base,
@@ -21,10 +24,16 @@ from pumplens.storage.models import (
     SignalRecord,
     UserRecord,
 )
-from pumplens.telegram.clean_ui import _edit_callback, _history_text
-from pumplens.telegram.keyboards import panel_home_keyboard
+from pumplens.telegram.clean_ui import (
+    _edit_callback,
+    _history_text,
+    clean_reply_menu_handler,
+    clean_start_handler,
+)
+from pumplens.telegram.keyboards import main_reply_keyboard, welcome_keyboard
 from pumplens.telegram.notifications import DeliveryCleanupWorker, DeliveryWorker
 from pumplens.telegram.panel import delete_command_best_effort, show_or_edit_panel
+from pumplens.webapp.sessions import ConnectSessionStore
 
 
 @pytest.fixture
@@ -43,6 +52,7 @@ class FakeBot:
         self.edit_error = edit_error
         self.edits: list[int] = []
         self.sent: list[int] = []
+        self.sent_markups: list[object] = []
         self.deleted: list[tuple[int, int]] = []
         self.next_message_id = 900
 
@@ -53,6 +63,7 @@ class FakeBot:
 
     async def send_message(self, chat_id: int, _text: str, **_kwargs: object) -> object:
         self.sent.append(chat_id)
+        self.sent_markups.append(_kwargs.get("reply_markup"))
         return SimpleNamespace(message_id=self.next_message_id)
 
     async def delete_message(self, chat_id: int, message_id: int) -> None:
@@ -73,18 +84,15 @@ async def _user(database: Database, *, panel_id: int | None = None) -> UserRecor
         return user
 
 
-def test_main_panel_keyboard_contract() -> None:
-    keyboard = panel_home_keyboard().inline_keyboard
-    callbacks = [button.callback_data for row in keyboard for button in row]
-    assert callbacks == [
-        "panel:status",
-        "panel:portfolio",
-        "panel:positions",
-        "panel:early",
-        "panel:history",
-        "panel:settings",
-        "panel:refresh",
+def test_main_reply_keyboard_contract() -> None:
+    keyboard = main_reply_keyboard()
+    assert [[button.text for button in row] for row in keyboard.keyboard] == [
+        ["💼 Портфель", "📈 Сигналы"],
+        ["📊 Позиции", "🧪 EARLY"],
+        ["⚙️ Настройки", "🔗 Binance"],
     ]
+    assert keyboard.is_persistent is True
+    assert keyboard.resize_keyboard is True
 
 
 async def test_panel_edits_saved_message_instead_of_sending(database: Database) -> None:
@@ -96,7 +104,7 @@ async def test_panel_edits_saved_message_instead_of_sending(database: Database) 
         telegram_user_id=42,
         chat_id=42,
         text="panel",
-        reply_markup=panel_home_keyboard(),
+        reply_markup=welcome_keyboard(),
     )
     assert result == 77
     assert bot.edits == [77]
@@ -116,7 +124,7 @@ async def test_panel_falls_back_to_new_message_and_persists_it(database: Databas
         telegram_user_id=42,
         chat_id=42,
         text="panel",
-        reply_markup=panel_home_keyboard(),
+        reply_markup=welcome_keyboard(),
     )
     assert result == 900
     assert bot.sent == [42]
@@ -153,10 +161,66 @@ async def test_onboarding_edits_the_same_message(database: Database) -> None:
         cast(Bot, cast(Any, bot)),
         database,
         "next",
-        panel_home_keyboard(),
+        welcome_keyboard(),
     )
     assert bot.edits == [55]
     assert bot.sent == []
+
+
+async def test_reply_button_is_deleted_and_opens_section(database: Database) -> None:
+    await _user(database)
+    bot = FakeBot()
+    message = cast(
+        Any,
+        SimpleNamespace(
+            from_user=SimpleNamespace(id=42),
+            chat=SimpleNamespace(id=42),
+            message_id=66,
+            text="💼 Портфель",
+        ),
+    )
+    await clean_reply_menu_handler(
+        message,
+        cast(Bot, cast(Any, bot)),
+        database,
+        AppSettings(),
+        RuntimeSecrets(),
+        ConnectSessionStore(),
+        ServiceState(),
+    )
+    assert bot.deleted == [(42, 66)]
+    assert bot.sent == [42]
+
+
+async def test_completed_start_uses_reply_menu_not_saved_floating_panel(
+    database: Database,
+) -> None:
+    await _user(database, panel_id=77)
+    bot = FakeBot()
+    message = cast(
+        Any,
+        SimpleNamespace(
+            from_user=SimpleNamespace(
+                id=42,
+                full_name="Rose",
+                language_code="ru",
+            ),
+            chat=SimpleNamespace(id=42),
+            message_id=67,
+        ),
+    )
+    await clean_start_handler(
+        message,
+        CommandObject(prefix="/", command="start", mention=None),
+        cast(Bot, cast(Any, bot)),
+        database,
+        RuntimeSecrets(),
+        AppSettings.model_validate({"onboarding": {"invite_only": False}}),
+    )
+    assert bot.deleted == [(42, 67)]
+    assert bot.edits == []
+    assert bot.sent == [42]
+    assert bot.sent_markups == [main_reply_keyboard()]
 
 
 async def test_signal_delivery_persists_message_and_delete_after(database: Database) -> None:

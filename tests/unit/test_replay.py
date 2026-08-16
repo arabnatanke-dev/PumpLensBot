@@ -171,3 +171,28 @@ async def test_recorder_coalesces_flushes_during_active_batches(tmp_path: Path) 
     await recorder._write_batch([event])
     assert fake_file.writes == 3
     assert fake_file.flushes == 1
+
+
+async def test_recorder_grows_batch_when_queue_has_backlog(tmp_path: Path) -> None:
+    recorder = MarketEventRecorder(
+        tmp_path / "market.jsonl",
+        queue_size=20_000,
+        batch_size=100,
+        flush_interval_seconds=60,
+    )
+    event = KlineEvent(
+        Kline("BTCUSDT", 0, 1, 100, 101, 99, 100, 1, 100, 10, 60)
+    )
+    batches: list[int] = []
+
+    async def capture_batch(events: list[object]) -> None:
+        batches.append(len(events))
+
+    recorder._write_batch = capture_batch  # type: ignore[method-assign]
+    for _ in range(2_500):
+        recorder._queue.put_nowait(event)
+    recorder._queue.put_nowait(None)
+
+    await recorder._write_loop()
+
+    assert batches == [2_000, 500]

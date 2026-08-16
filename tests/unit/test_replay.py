@@ -196,3 +196,24 @@ async def test_recorder_grows_batch_when_queue_has_backlog(tmp_path: Path) -> No
     await recorder._write_loop()
 
     assert batches == [2_000, 500]
+
+
+async def test_recorder_drain_waits_for_backlog(tmp_path: Path) -> None:
+    recorder = MarketEventRecorder(
+        tmp_path / "market.jsonl",
+        queue_size=3_000,
+        batch_size=100,
+        flush_interval_seconds=60,
+    )
+    event = KlineEvent(
+        Kline("BTCUSDT", 0, 1, 100, 101, 99, 100, 1, 100, 10, 60)
+    )
+    await recorder.open()
+    for _ in range(2_500):
+        await recorder.record(event)
+
+    await recorder.drain()
+
+    assert recorder._queue.empty()
+    assert recorder.dropped_events == 0
+    await recorder.close()

@@ -73,6 +73,13 @@ class MarketEventRecorder:
             await self._file.close()
             self._file = None
 
+    async def drain(self) -> None:
+        """Wait until queued events are written. / Ждёт записи всех событий очереди."""
+
+        if self._worker is None:
+            raise RuntimeError("Recorder is not open / Рекордер не открыт")
+        await self._queue.join()
+
     async def record(self, event: MarketEvent) -> None:
         """Enqueue without awaiting disk. / Ставит в очередь без ожидания диска."""
 
@@ -92,8 +99,10 @@ class MarketEventRecorder:
         while not stopping:
             event = await self._queue.get()
             if event is None:
+                self._queue.task_done()
                 break
             batch = [event]
+            stop_item_received = False
             # A live burst can fill the queue faster than a network volume accepts
             # small writes. Grow only the current batch; one writer still bounds all
             # disk and serialization work. / Во время всплеска увеличиваем только
@@ -120,9 +129,14 @@ class MarketEventRecorder:
                         break
                 if item is None:
                     stopping = True
+                    stop_item_received = True
                     break
                 batch.append(item)
             await self._write_batch(batch)
+            for _ in batch:
+                self._queue.task_done()
+            if stop_item_received:
+                self._queue.task_done()
 
     async def _write_batch(self, events: list[MarketEvent]) -> None:
         # A single awaited worker keeps large burst serialization off the event loop

@@ -94,8 +94,18 @@ class MarketEventRecorder:
             if event is None:
                 break
             batch = [event]
+            # A live burst can fill the queue faster than a network volume accepts
+            # small writes. Grow only the current batch; one writer still bounds all
+            # disk and serialization work. / Во время всплеска увеличиваем только
+            # текущий batch; запись и сериализация остаются строго последовательными.
+            batch_limit = self._batch_size
+            if self._batch_size > 1:
+                batch_limit = max(
+                    self._batch_size,
+                    min(self._queue.qsize() + 1, self._batch_size * 20),
+                )
             deadline = asyncio.get_running_loop().time() + self._flush_interval_seconds
-            while len(batch) < self._batch_size:
+            while len(batch) < batch_limit:
                 try:
                     # Drain an active queue without creating one timeout task per event.
                     # Активную очередь забираем без отдельного timeout-task на событие.
@@ -115,7 +125,10 @@ class MarketEventRecorder:
             await self._write_batch(batch)
 
     async def _write_batch(self, events: list[MarketEvent]) -> None:
-        serialized = "".join(_serialize(event) for event in events)
+        # A single awaited worker keeps large burst serialization off the event loop
+        # without creating an unbounded thread queue. / Один ожидаемый worker не
+        # блокирует event loop и не создаёт бесконтрольную очередь потоков.
+        serialized = await asyncio.to_thread(_serialize_batch, events)
         size = len(serialized.encode("utf-8"))
         if self._current_size and self._current_size + size > self._max_file_size_bytes:
             await self._rotate()
@@ -168,6 +181,10 @@ def _serialize(event: MarketEvent) -> str:
         "payload": dataclasses.asdict(event.value),
     }
     return json.dumps(row, separators=(",", ":"), sort_keys=True) + "\n"
+
+
+def _serialize_batch(events: list[MarketEvent]) -> str:
+    return "".join(_serialize(event) for event in events)
 
 
 def _gzip_and_remove(path: Path) -> None:

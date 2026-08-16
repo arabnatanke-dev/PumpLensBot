@@ -13,6 +13,7 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandObject
 from aiogram.methods import DeleteMessage, EditMessageText
+from aiogram.types import InlineKeyboardMarkup, ReplyKeyboardMarkup
 from sqlalchemy import select
 
 from pumplens.config import AppSettings, RuntimeSecrets
@@ -32,6 +33,7 @@ from pumplens.telegram.clean_ui import (
     _edit_callback,
     _history_text,
     _refresh_portfolio,
+    clean_menu_back,
     clean_reply_menu_handler,
     clean_screen_callback,
     clean_start_handler,
@@ -70,13 +72,20 @@ class FakeBot:
     async def send_message(self, chat_id: int, _text: str, **_kwargs: object) -> object:
         self.sent.append(chat_id)
         self.sent_markups.append(_kwargs.get("reply_markup"))
-        return SimpleNamespace(message_id=self.next_message_id)
+        message = SimpleNamespace(message_id=self.next_message_id)
+        self.next_message_id += 1
+        return message
 
     async def delete_message(self, chat_id: int, message_id: int) -> None:
         self.deleted.append((chat_id, message_id))
 
 
-async def _user(database: Database, *, panel_id: int | None = None) -> UserRecord:
+async def _user(
+    database: Database,
+    *,
+    panel_id: int | None = None,
+    menu_id: int | None = None,
+) -> UserRecord:
     async with database.session() as session, session.begin():
         user = UserRecord(
             telegram_user_id=42,
@@ -84,6 +93,7 @@ async def _user(database: Database, *, panel_id: int | None = None) -> UserRecor
             status="ACTIVE",
             onboarding_state="COMPLETE",
             telegram_panel_message_id=panel_id,
+            telegram_menu_message_id=menu_id,
         )
         session.add(user)
         await session.flush()
@@ -176,7 +186,7 @@ async def test_onboarding_edits_the_same_message(database: Database) -> None:
 async def test_reply_button_moves_screen_to_bottom_then_inline_edits_it(
     database: Database,
 ) -> None:
-    await _user(database, panel_id=77)
+    await _user(database, panel_id=77, menu_id=55)
     bot = FakeBot()
     message = cast(
         Any,
@@ -197,13 +207,16 @@ async def test_reply_button_moves_screen_to_bottom_then_inline_edits_it(
         ServiceState(),
     )
     assert bot.deleted == [(42, 66), (42, 77)]
+    assert (42, 55) not in bot.deleted
     assert bot.edits == []
     assert bot.sent == [42]
+    assert isinstance(bot.sent_markups[0], InlineKeyboardMarkup)
     async with database.session() as session:
         user = await session.scalar(
             select(UserRecord).where(UserRecord.telegram_user_id == 42)
         )
         assert user is not None and user.telegram_panel_message_id == 900
+        assert user.telegram_menu_message_id == 55
 
     callback = cast(
         Any,
@@ -228,9 +241,11 @@ async def test_reply_button_moves_screen_to_bottom_then_inline_edits_it(
     assert bot.sent == [42]
 
 
-async def test_completed_start_sends_reply_keyboard_and_replaces_old_screen(
+async def test_completed_start_creates_separate_menu_anchor_and_content_screen(
     database: Database,
 ) -> None:
+    # Production migration path: the old release stored its keyboard message as panel.
+    # Production migration: старая версия хранила keyboard message как panel.
     await _user(database, panel_id=77)
     bot = FakeBot()
     message = cast(
@@ -255,19 +270,55 @@ async def test_completed_start_sends_reply_keyboard_and_replaces_old_screen(
     )
     assert bot.deleted == [(42, 67), (42, 77)]
     assert bot.edits == []
-    assert bot.sent == [42]
-    assert bot.sent_markups == [main_reply_keyboard()]
+    assert bot.sent == [42, 42]
+    assert bot.sent_markups == [main_reply_keyboard(), None]
+    assert isinstance(bot.sent_markups[0], ReplyKeyboardMarkup)
     async with database.session() as session:
         user = await session.scalar(
             select(UserRecord).where(UserRecord.telegram_user_id == 42)
         )
-        assert user is not None and user.telegram_panel_message_id == 900
+        assert user is not None and user.telegram_menu_message_id == 900
+        assert user.telegram_panel_message_id == 901
+        assert user.telegram_menu_message_id != user.telegram_panel_message_id
+
+
+async def test_repeated_start_replaces_anchor_without_accumulating(database: Database) -> None:
+    await _user(database, panel_id=77)
+    bot = FakeBot()
+
+    def start_message(message_id: int) -> object:
+        return SimpleNamespace(
+            from_user=SimpleNamespace(id=42, full_name="Rose", language_code="ru"),
+            chat=SimpleNamespace(id=42),
+            message_id=message_id,
+        )
+
+    command = CommandObject(prefix="/", command="start", mention=None)
+    for message_id in (67, 68):
+        await clean_start_handler(
+            cast(Any, start_message(message_id)),
+            command,
+            cast(Bot, cast(Any, bot)),
+            database,
+            RuntimeSecrets(),
+            AppSettings.model_validate({"onboarding": {"invite_only": False}}),
+        )
+
+    assert bot.sent == [42, 42, 42, 42]
+    assert (42, 900) in bot.deleted
+    assert (42, 901) in bot.deleted
+    async with database.session() as session:
+        user = await session.scalar(
+            select(UserRecord).where(UserRecord.telegram_user_id == 42)
+        )
+        assert user is not None and user.telegram_menu_message_id == 902
+        assert user.telegram_panel_message_id == 903
 
 
 async def test_reply_navigation_survives_old_screen_delete_failure(
     database: Database,
 ) -> None:
-    await _user(database, panel_id=77)
+    await _user(database, panel_id=77, menu_id=55)
     bot = FakeBot()
 
     async def fail_delete(_chat_id: int, _message_id: int) -> None:
@@ -298,6 +349,42 @@ async def test_reply_navigation_survives_old_screen_delete_failure(
             select(UserRecord).where(UserRecord.telegram_user_id == 42)
         )
         assert user is not None and user.telegram_panel_message_id == 900
+        assert user.telegram_menu_message_id == 55
+
+
+async def test_start_survives_anchor_and_content_delete_failures(
+    database: Database,
+) -> None:
+    await _user(database, panel_id=77, menu_id=55)
+    bot = FakeBot()
+
+    async def fail_delete(_chat_id: int, _message_id: int) -> None:
+        raise RuntimeError("cannot delete")
+
+    bot.delete_message = fail_delete  # type: ignore[method-assign]
+    message = cast(
+        Any,
+        SimpleNamespace(
+            from_user=SimpleNamespace(id=42, full_name="Rose", language_code="ru"),
+            chat=SimpleNamespace(id=42),
+            message_id=67,
+        ),
+    )
+    await clean_start_handler(
+        message,
+        CommandObject(prefix="/", command="start", mention=None),
+        cast(Bot, cast(Any, bot)),
+        database,
+        RuntimeSecrets(),
+        AppSettings.model_validate({"onboarding": {"invite_only": False}}),
+    )
+    assert bot.sent == [42, 42]
+    async with database.session() as session:
+        user = await session.scalar(
+            select(UserRecord).where(UserRecord.telegram_user_id == 42)
+        )
+        assert user is not None and user.telegram_menu_message_id == 900
+        assert user.telegram_panel_message_id == 901
 
 
 async def test_portfolio_inline_tab_edits_the_saved_screen(database: Database) -> None:
@@ -356,6 +443,29 @@ async def test_portfolio_inline_tab_edits_the_saved_screen(database: Database) -
     )
     assert bot.edits == [77]
     assert bot.sent == []
+
+
+async def test_menu_back_edits_only_content_screen(database: Database) -> None:
+    await _user(database, panel_id=77, menu_id=55)
+    callback = cast(
+        Any,
+        SimpleNamespace(
+            from_user=SimpleNamespace(id=42),
+            message=SimpleNamespace(chat=SimpleNamespace(id=42), message_id=77),
+            answer=AsyncMock(),
+        ),
+    )
+    bot = FakeBot()
+    await clean_menu_back(callback, cast(Bot, cast(Any, bot)))
+    assert bot.edits == [77]
+    assert bot.sent == []
+    assert bot.deleted == []
+    async with database.session() as session:
+        user = await session.scalar(
+            select(UserRecord).where(UserRecord.telegram_user_id == 42)
+        )
+        assert user is not None and user.telegram_menu_message_id == 55
+        assert user.telegram_panel_message_id == 77
 
 
 async def test_manual_refresh_invokes_existing_reconciler(database: Database) -> None:

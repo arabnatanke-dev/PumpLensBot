@@ -174,6 +174,7 @@ class UserRecord(UUIDPrimaryKey, Timestamped, Base):
         nullable=False,
     )
     telegram_panel_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    telegram_menu_message_id: Mapped[int | None] = mapped_column(BigInteger)
 
 
 class UserConsentRecord(UUIDPrimaryKey, Base):

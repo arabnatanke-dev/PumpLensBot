@@ -55,7 +55,11 @@ from pumplens.telegram.keyboards import (
     signals_keyboard,
     welcome_keyboard,
 )
-from pumplens.telegram.panel import delete_command_best_effort, show_or_edit_panel
+from pumplens.telegram.panel import (
+    delete_command_best_effort,
+    replace_menu_anchor,
+    show_or_edit_panel,
+)
 from pumplens.webapp.sessions import ConnectSessionStore
 
 router = Router(name="pumplens-clean-ui")
@@ -92,13 +96,20 @@ async def clean_start_handler(
         return
     await delete_command_best_effort(bot, message)
     if complete:
+        await replace_menu_anchor(
+            bot,
+            database,
+            telegram_user_id=telegram_user.id,
+            chat_id=message.chat.id,
+            reply_markup=main_reply_keyboard(),
+        )
         await show_or_edit_panel(
             bot,
             database,
             telegram_user_id=telegram_user.id,
             chat_id=message.chat.id,
             text="<b>🤖 PumpLens</b>\nВыберите раздел в постоянном меню.",
-            reply_markup=main_reply_keyboard(),
+            reply_markup=None,
             force_send=True,
         )
         return
@@ -241,6 +252,13 @@ async def clean_skip_binance(
         onboarding.complete(user)
     if callback.message is None:
         return
+    await replace_menu_anchor(
+        bot,
+        database,
+        telegram_user_id=callback.from_user.id,
+        chat_id=callback.message.chat.id,
+        reply_markup=main_reply_keyboard(),
+    )
     await show_or_edit_panel(
         bot,
         database,
@@ -248,7 +266,7 @@ async def clean_skip_binance(
         chat_id=callback.message.chat.id,
         message_id=callback.message.message_id,
         text="<b>🤖 PumpLens</b>\nВыберите раздел.",
-        reply_markup=main_reply_keyboard(),
+        reply_markup=None,
         force_send=True,
     )
 

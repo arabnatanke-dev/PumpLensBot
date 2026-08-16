@@ -12,6 +12,8 @@ from sqlalchemy import select
 from pumplens.storage.db import Database
 from pumplens.storage.models import UserRecord
 
+MENU_ANCHOR_TEXT = "<b>⌨️ Меню PumpLens</b>\nВыберите раздел ниже."
+
 
 async def show_or_edit_panel(
     bot: Bot,
@@ -79,6 +81,32 @@ async def delete_command_best_effort(bot: Bot, message: Message) -> None:
         return
 
 
+async def replace_menu_anchor(
+    bot: Bot,
+    database: Database,
+    *,
+    telegram_user_id: int,
+    chat_id: int,
+    reply_markup: ReplyKeyboardMarkup,
+) -> int:
+    """Create the reply-keyboard anchor without touching content. / Создаёт anchor меню."""
+
+    async with database.session() as session:
+        user = await session.scalar(
+            select(UserRecord).where(UserRecord.telegram_user_id == telegram_user_id)
+        )
+        old_message_id = user.telegram_menu_message_id if user is not None else None
+
+    anchor = await bot.send_message(chat_id, MENU_ANCHOR_TEXT, reply_markup=reply_markup)
+    await _save_menu_id(database, telegram_user_id, anchor.message_id)
+    if old_message_id is not None and old_message_id != anchor.message_id:
+        # The new keyboard is active before cleanup, so deletion failure is harmless.
+        # Новая клавиатура уже активна, поэтому ошибка удаления безопасна.
+        with suppress(Exception):
+            await bot.delete_message(chat_id, old_message_id)
+    return anchor.message_id
+
+
 async def _save_panel_id(
     database: Database,
     telegram_user_id: int,
@@ -90,3 +118,16 @@ async def _save_panel_id(
         )
         if user is not None:
             user.telegram_panel_message_id = message_id
+
+
+async def _save_menu_id(
+    database: Database,
+    telegram_user_id: int,
+    message_id: int,
+) -> None:
+    async with database.session() as session, session.begin():
+        user = await session.scalar(
+            select(UserRecord).where(UserRecord.telegram_user_id == telegram_user_id)
+        )
+        if user is not None:
+            user.telegram_menu_message_id = message_id

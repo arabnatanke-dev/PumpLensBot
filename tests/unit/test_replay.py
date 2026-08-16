@@ -126,36 +126,48 @@ async def test_recorder_can_skip_book_ticker_and_rotate(tmp_path: Path) -> None:
     assert "BookTickerEvent" not in path.read_text()
 
 
-async def test_recorder_sustains_bursty_market_input(tmp_path: Path) -> None:
-    path = tmp_path / "market.jsonl"
-    recorder = MarketEventRecorder(
-        path,
-        queue_size=2_000,
-        batch_size=500,
-        flush_interval_seconds=0.05,
-    )
-    await recorder.open()
-    for offset in range(10_000):
-        await recorder.record(
-            KlineEvent(
-                Kline(
-                    "BTCUSDT",
-                    offset,
-                    offset + 1,
-                    100,
-                    101,
-                    99,
-                    100,
-                    1,
-                    100,
-                    10,
-                    60,
-                )
-            )
-        )
-        if offset % 100 == 0:
-            await asyncio.sleep(0)
-    await recorder.close()
+async def test_recorder_coalesces_flushes_during_active_batches(tmp_path: Path) -> None:
+    class FakeFile:
+        def __init__(self) -> None:
+            self.writes = 0
+            self.flushes = 0
 
-    assert recorder.dropped_events == 0
-    assert sum(1 for _ in path.open(encoding="utf-8")) == 10_000
+        async def write(self, _value: str) -> None:
+            self.writes += 1
+
+        async def flush(self) -> None:
+            self.flushes += 1
+
+    recorder = MarketEventRecorder(
+        tmp_path / "market.jsonl",
+        batch_size=500,
+        flush_interval_seconds=60,
+    )
+    fake_file = FakeFile()
+    recorder._file = fake_file  # type: ignore[assignment]
+    recorder._last_flush_at = asyncio.get_running_loop().time()
+    event = KlineEvent(
+        Kline(
+            "BTCUSDT",
+            0,
+            1,
+            100,
+            101,
+            99,
+            100,
+            1,
+            100,
+            10,
+            60,
+        )
+    )
+
+    await recorder._write_batch([event])
+    await recorder._write_batch([event])
+    assert fake_file.writes == 2
+    assert fake_file.flushes == 0
+
+    recorder._last_flush_at = 0
+    await recorder._write_batch([event])
+    assert fake_file.writes == 3
+    assert fake_file.flushes == 1

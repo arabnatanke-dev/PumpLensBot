@@ -141,7 +141,9 @@ portfolio:
 replay:
   enabled: true
   record_path: data/market.jsonl
-  queue_size: 50000
+  # Absorbs the finite REST warmup while a slower persistent volume catches up.
+  # Вмещает REST-прогрев, пока более медленный persistent volume догоняет поток.
+  queue_size: 100000
   batch_size: 500
   flush_interval_seconds: 0.5
   max_file_size_mb: 200

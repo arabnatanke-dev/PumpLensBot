@@ -104,11 +104,6 @@ async def run_scanner(
                     await recorder.record(KlineEvent(kline))
                 if buffer.current_kline is not None:
                     await recorder.record(KlineEvent(buffer.current_kline))
-            # Finish the finite REST warmup before opening live streams. This keeps
-            # startup history from competing with the hot path on slow volumes.
-            # REST-прогрев дописываем до подключения live-потоков, чтобы медленный
-            # volume не смешивал стартовую историю с горячим потоком.
-            await recorder.drain()
 
         async def market_handler(event: MarketEvent) -> None:
             await state.handle(event)

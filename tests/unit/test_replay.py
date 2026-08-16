@@ -124,3 +124,38 @@ async def test_recorder_can_skip_book_ticker_and_rotate(tmp_path: Path) -> None:
     rotated = await asyncio.to_thread(lambda: list(tmp_path.glob("market-*.jsonl.gz")))
     assert rotated
     assert "BookTickerEvent" not in path.read_text()
+
+
+async def test_recorder_sustains_bursty_market_input(tmp_path: Path) -> None:
+    path = tmp_path / "market.jsonl"
+    recorder = MarketEventRecorder(
+        path,
+        queue_size=2_000,
+        batch_size=500,
+        flush_interval_seconds=0.05,
+    )
+    await recorder.open()
+    for offset in range(10_000):
+        await recorder.record(
+            KlineEvent(
+                Kline(
+                    "BTCUSDT",
+                    offset,
+                    offset + 1,
+                    100,
+                    101,
+                    99,
+                    100,
+                    1,
+                    100,
+                    10,
+                    60,
+                )
+            )
+        )
+        if offset % 100 == 0:
+            await asyncio.sleep(0)
+    await recorder.close()
+
+    assert recorder.dropped_events == 0
+    assert sum(1 for _ in path.open(encoding="utf-8")) == 10_000

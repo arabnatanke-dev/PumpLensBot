@@ -47,6 +47,7 @@ class MarketEventRecorder:
         self._worker: asyncio.Task[None] | None = None
         self._compression_tasks: set[asyncio.Task[None]] = set()
         self._current_size = 0
+        self._last_flush_at = 0.0
         self._rotation_sequence = 0
         self.dropped_events = 0
 
@@ -95,13 +96,18 @@ class MarketEventRecorder:
             batch = [event]
             deadline = asyncio.get_running_loop().time() + self._flush_interval_seconds
             while len(batch) < self._batch_size:
-                remaining = deadline - asyncio.get_running_loop().time()
-                if remaining <= 0:
-                    break
                 try:
-                    item = await asyncio.wait_for(self._queue.get(), timeout=remaining)
-                except TimeoutError:
-                    break
+                    # Drain an active queue without creating one timeout task per event.
+                    # Активную очередь забираем без отдельного timeout-task на событие.
+                    item = self._queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    if remaining <= 0:
+                        break
+                    try:
+                        item = await asyncio.wait_for(self._queue.get(), timeout=remaining)
+                    except TimeoutError:
+                        break
                 if item is None:
                     stopping = True
                     break
@@ -116,12 +122,16 @@ class MarketEventRecorder:
         if self._file is None:
             raise RuntimeError("Recorder file is closed / Файл рекордера закрыт")
         await self._file.write(serialized)
-        await self._file.flush()
+        now = asyncio.get_running_loop().time()
+        if now - self._last_flush_at >= self._flush_interval_seconds:
+            await self._file.flush()
+            self._last_flush_at = now
         self._current_size += size
 
     async def _open_file(self) -> None:
         self._file = await aiofiles.open(self._path, "a", encoding="utf-8")
         self._current_size = self._path.stat().st_size if self._path.exists() else 0
+        self._last_flush_at = asyncio.get_running_loop().time()
 
     async def _rotate(self) -> None:
         if self._file is not None:

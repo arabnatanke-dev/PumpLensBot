@@ -33,12 +33,20 @@ from pumplens.telegram.clean_ui import (
     _edit_callback,
     _history_text,
     _refresh_portfolio,
-    clean_menu_back,
     clean_reply_menu_handler,
     clean_screen_callback,
     clean_start_handler,
 )
-from pumplens.telegram.keyboards import main_reply_keyboard, welcome_keyboard
+from pumplens.telegram.keyboards import (
+    early_keyboard,
+    main_reply_keyboard,
+    panel_binance_keyboard,
+    panel_settings_keyboard,
+    portfolio_keyboard,
+    signals_keyboard,
+    top_level_keyboard,
+    welcome_keyboard,
+)
 from pumplens.telegram.notifications import DeliveryCleanupWorker, DeliveryWorker
 from pumplens.telegram.panel import delete_command_best_effort, show_or_edit_panel
 from pumplens.webapp.sessions import ConnectSessionStore
@@ -59,6 +67,7 @@ class FakeBot:
     def __init__(self, *, edit_error: Exception | None = None) -> None:
         self.edit_error = edit_error
         self.edits: list[int] = []
+        self.edit_markups: list[object] = []
         self.sent: list[int] = []
         self.sent_markups: list[object] = []
         self.deleted: list[tuple[int, int]] = []
@@ -68,6 +77,7 @@ class FakeBot:
         if self.edit_error:
             raise self.edit_error
         self.edits.append(int(kwargs["message_id"]))
+        self.edit_markups.append(kwargs.get("reply_markup"))
 
     async def send_message(self, chat_id: int, _text: str, **_kwargs: object) -> object:
         self.sent.append(chat_id)
@@ -109,6 +119,49 @@ def test_main_reply_keyboard_contract() -> None:
     ]
     assert keyboard.is_persistent is True
     assert keyboard.resize_keyboard is True
+
+
+def _inline_buttons(keyboard: InlineKeyboardMarkup) -> list[object]:
+    return [button for row in keyboard.inline_keyboard for button in row]
+
+
+def test_top_level_screens_do_not_have_generic_back() -> None:
+    keyboards = [
+        portfolio_keyboard("overview"),
+        signals_keyboard("all"),
+        top_level_keyboard(),
+        early_keyboard(),
+        panel_settings_keyboard(
+            profile="balanced",
+            directions=["LONG", "SHORT"],
+            connected=False,
+            connect_url=None,
+        ),
+        panel_binance_keyboard(connected=False, connect_url=None),
+    ]
+
+    for keyboard in keyboards:
+        buttons = _inline_buttons(keyboard)
+        assert all(getattr(button, "text", None) != "⬅️ Назад" for button in buttons)
+        assert all(getattr(button, "callback_data", None) != "menu:back" for button in buttons)
+
+    overview_buttons = _inline_buttons(portfolio_keyboard("overview"))
+    assert all(
+        getattr(button, "text", None) != "⬅️ Обзор портфеля"
+        for button in overview_buttons
+    )
+
+
+@pytest.mark.parametrize("section", ["spot", "futures", "earn", "funding"])
+def test_portfolio_child_screens_have_parent_navigation(section: str) -> None:
+    buttons = _inline_buttons(portfolio_keyboard(section))
+    parent_buttons = [
+        button
+        for button in buttons
+        if getattr(button, "text", None) == "⬅️ Обзор портфеля"
+    ]
+    assert len(parent_buttons) == 1
+    assert getattr(parent_buttons[0], "callback_data", None) == "screen:portfolio:overview"
 
 
 async def test_panel_edits_saved_message_instead_of_sending(database: Database) -> None:
@@ -239,6 +292,41 @@ async def test_reply_button_moves_screen_to_bottom_then_inline_edits_it(
     )
     assert bot.edits == [900]
     assert bot.sent == [42]
+
+    parent_callback = cast(
+        Any,
+        SimpleNamespace(
+            data="screen:portfolio:overview",
+            from_user=SimpleNamespace(id=42),
+            message=SimpleNamespace(chat=SimpleNamespace(id=42), message_id=900),
+            answer=AsyncMock(),
+        ),
+    )
+    await clean_screen_callback(
+        parent_callback,
+        cast(Bot, cast(Any, bot)),
+        database,
+        AppSettings(),
+        RuntimeSecrets(),
+        ConnectSessionStore(),
+        ServiceState(),
+        cast(Any, None),
+    )
+    assert bot.edits == [900, 900]
+    assert bot.sent == [42]
+    assert bot.deleted == [(42, 66), (42, 77)]
+    assert (42, 55) not in bot.deleted
+    assert isinstance(bot.edit_markups[-1], InlineKeyboardMarkup)
+    assert all(
+        getattr(button, "text", None) != "⬅️ Обзор портфеля"
+        for button in _inline_buttons(cast(InlineKeyboardMarkup, bot.edit_markups[-1]))
+    )
+    async with database.session() as session:
+        user = await session.scalar(
+            select(UserRecord).where(UserRecord.telegram_user_id == 42)
+        )
+        assert user is not None and user.telegram_panel_message_id == 900
+        assert user.telegram_menu_message_id == 55
 
 
 async def test_completed_start_creates_separate_menu_anchor_and_content_screen(
@@ -443,29 +531,6 @@ async def test_portfolio_inline_tab_edits_the_saved_screen(database: Database) -
     )
     assert bot.edits == [77]
     assert bot.sent == []
-
-
-async def test_menu_back_edits_only_content_screen(database: Database) -> None:
-    await _user(database, panel_id=77, menu_id=55)
-    callback = cast(
-        Any,
-        SimpleNamespace(
-            from_user=SimpleNamespace(id=42),
-            message=SimpleNamespace(chat=SimpleNamespace(id=42), message_id=77),
-            answer=AsyncMock(),
-        ),
-    )
-    bot = FakeBot()
-    await clean_menu_back(callback, cast(Bot, cast(Any, bot)))
-    assert bot.edits == [77]
-    assert bot.sent == []
-    assert bot.deleted == []
-    async with database.session() as session:
-        user = await session.scalar(
-            select(UserRecord).where(UserRecord.telegram_user_id == 42)
-        )
-        assert user is not None and user.telegram_menu_message_id == 55
-        assert user.telegram_panel_message_id == 77
 
 
 async def test_manual_refresh_invokes_existing_reconciler(database: Database) -> None:

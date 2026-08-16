@@ -47,12 +47,12 @@ from pumplens.telegram.keyboards import (
     directions_keyboard,
     early_keyboard,
     main_reply_keyboard,
-    panel_back_keyboard,
     panel_binance_keyboard,
     panel_settings_keyboard,
     portfolio_keyboard,
     profile_keyboard,
     signals_keyboard,
+    top_level_keyboard,
     welcome_keyboard,
 )
 from pumplens.telegram.panel import (
@@ -291,9 +291,6 @@ async def clean_panel_callback(
         section = "settings"
     else:
         section = data.split(":", 1)[1]
-        if section in {"home", "refresh"}:
-            await _show_menu_hint(callback, bot)
-            return
     text, keyboard = await panel_content(
         section,
         callback.from_user.id,
@@ -304,12 +301,6 @@ async def clean_panel_callback(
         service_state,
     )
     await _edit_inline_callback(callback, bot, text, keyboard)
-
-
-@router.callback_query(F.data == "menu:back")
-async def clean_menu_back(callback: CallbackQuery, bot: Bot) -> None:
-    await callback.answer()
-    await _show_menu_hint(callback, bot)
 
 
 @router.callback_query(F.data.startswith("screen:"))
@@ -347,17 +338,6 @@ async def clean_screen_callback(
         service_state,
     )
     await _edit_callback(callback, bot, database, text, keyboard)
-
-
-async def _show_menu_hint(callback: CallbackQuery, bot: Bot) -> None:
-    if callback.message is None:
-        return
-    await bot.edit_message_text(
-        "Главное меню доступно внизу чата.",
-        chat_id=callback.message.chat.id,
-        message_id=callback.message.message_id,
-        reply_markup=None,
-    )
 
 
 async def _edit_inline_callback(
@@ -491,25 +471,25 @@ async def panel_content(
         return (
             f"<b>📡 Статус</b>\nPumpLens: {state}\nUniverse: {status.universe_size}\n"
             f"Stage B candidates: {status.candidates_count}",
-            panel_back_keyboard(),
+            top_level_keyboard(),
         )
     if section == "positions":
         data = await _portfolio_data(telegram_user_id, database)
         if data is None:
             return (
                 "Binance ещё не подключён или портфель не синхронизирован.",
-                panel_back_keyboard(),
+                top_level_keyboard(),
             )
         text = format_positions(data.positions)
-        return text, panel_back_keyboard()
+        return text, top_level_keyboard()
     if section == "portfolio" or section.startswith("portfolio:"):
+        tab = section.split(":", 1)[1] if ":" in section else "overview"
         data = await _portfolio_data(telegram_user_id, database)
         if data is None:
             return (
                 "Binance ещё не подключён или портфель не синхронизирован.",
-                portfolio_keyboard(),
+                portfolio_keyboard(tab),
             )
-        tab = section.split(":", 1)[1] if ":" in section else "overview"
         source_status = data.snapshot.source_status_json
         text_by_tab = {
             "overview": format_portfolio(data.snapshot, data.positions),
@@ -580,7 +560,7 @@ async def panel_content(
                 connect_url=_connect_url(runtime, connect_sessions, telegram_user_id),
             ),
         )
-    return "Раздел не найден.", panel_back_keyboard()
+    return "Раздел не найден.", top_level_keyboard()
 
 
 async def _history_text(database: Database, direction: str = "all") -> str:

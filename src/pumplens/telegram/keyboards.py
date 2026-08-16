@@ -96,7 +96,7 @@ def disconnect_confirm_keyboard() -> InlineKeyboardMarkup:
                     callback_data="binance:disconnect_confirm",
                 )
             ],
-            [InlineKeyboardButton(text="Отмена", callback_data="binance:disconnect_cancel")],
+            [InlineKeyboardButton(text="Отмена", callback_data="panel:binance")],
         ]
     )
 
@@ -123,12 +123,10 @@ def main_reply_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
-def panel_back_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:back")],
-        ]
-    )
+def top_level_keyboard() -> InlineKeyboardMarkup:
+    """Top-level screens navigate through the persistent reply menu. / Навигация через menu."""
+
+    return InlineKeyboardMarkup(inline_keyboard=[])
 
 
 def portfolio_keyboard(active: str = "overview") -> InlineKeyboardMarkup:
@@ -137,36 +135,43 @@ def portfolio_keyboard(active: str = "overview") -> InlineKeyboardMarkup:
     def label(key: str, text: str) -> str:
         return f"• {text}" if active == key else text
 
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=label("overview", "Обзор"),
+                callback_data="screen:portfolio:overview",
+            ),
+            InlineKeyboardButton(
+                text=label("spot", "Spot"),
+                callback_data="screen:portfolio:spot",
+            ),
+            InlineKeyboardButton(
+                text=label("futures", "Futures"),
+                callback_data="screen:portfolio:futures",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text=label("earn", "Earn"),
+                callback_data="screen:portfolio:earn",
+            ),
+            InlineKeyboardButton(
+                text=label("funding", "Funding"),
+                callback_data="screen:portfolio:funding",
+            ),
+        ],
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data="screen:refresh:portfolio")],
+    ]
+    if active != "overview":
+        rows.append(
             [
                 InlineKeyboardButton(
-                    text=label("overview", "Обзор"),
+                    text="⬅️ Обзор портфеля",
                     callback_data="screen:portfolio:overview",
-                ),
-                InlineKeyboardButton(
-                    text=label("spot", "Spot"),
-                    callback_data="screen:portfolio:spot",
-                ),
-                InlineKeyboardButton(
-                    text=label("futures", "Futures"),
-                    callback_data="screen:portfolio:futures",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text=label("earn", "Earn"),
-                    callback_data="screen:portfolio:earn",
-                ),
-                InlineKeyboardButton(
-                    text=label("funding", "Funding"),
-                    callback_data="screen:portfolio:funding",
-                ),
-            ],
-            [InlineKeyboardButton(text="🔄 Обновить", callback_data="screen:refresh:portfolio")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:back")],
-        ]
-    )
+                )
+            ]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def signals_keyboard(direction: str = "all") -> InlineKeyboardMarkup:
@@ -186,7 +191,6 @@ def signals_keyboard(direction: str = "all") -> InlineKeyboardMarkup:
                     text=label("short", "SHORT"), callback_data="screen:signals:short"
                 ),
             ],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:back")],
         ]
     )
 
@@ -195,7 +199,6 @@ def early_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="🔄 Обновить", callback_data="screen:early:refresh")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:back")],
         ]
     )
 
@@ -259,7 +262,6 @@ def panel_settings_keyboard(
                 )
             ]
         )
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -289,5 +291,4 @@ def panel_binance_keyboard(
                 )
             ]
         )
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

@@ -40,8 +40,9 @@ from pumplens.telegram.keyboards import (
     consent_keyboard,
     directions_keyboard,
     disconnect_confirm_keyboard,
-    panel_back_keyboard,
+    portfolio_keyboard,
     profile_keyboard,
+    top_level_keyboard,
     welcome_keyboard,
 )
 from pumplens.webapp.sessions import ConnectSessionStore
@@ -355,7 +356,7 @@ async def portfolio_callback(callback: CallbackQuery, database: Database) -> Non
     if data is None:
         await callback.message.edit_text(
             "Портфель ещё не синхронизирован.",
-            reply_markup=panel_back_keyboard(),
+            reply_markup=portfolio_keyboard(),
         )
         return
     snapshot, positions = data
@@ -364,7 +365,12 @@ async def portfolio_callback(callback: CallbackQuery, database: Database) -> Non
         if callback.data == "binance:portfolio"
         else format_positions(positions)
     )
-    await callback.message.edit_text(text, reply_markup=panel_back_keyboard())
+    keyboard = (
+        portfolio_keyboard()
+        if callback.data == "binance:portfolio"
+        else top_level_keyboard()
+    )
+    await callback.message.edit_text(text, reply_markup=keyboard)
 
 
 @router.callback_query(F.data == "binance:refresh")
@@ -381,14 +387,14 @@ async def refresh_binance_callback(
         if isinstance(callback.message, Message):
             await callback.message.edit_text(
                 "Binance не подключён.",
-                reply_markup=panel_back_keyboard(),
+                reply_markup=top_level_keyboard(),
             )
         return
     ok = await portfolio_reconciler.reconcile_now(account.id)
     if isinstance(callback.message, Message):
         await callback.message.edit_text(
             "✅ Портфель обновлён" if ok else "⚠️ Обновить не удалось",
-            reply_markup=panel_back_keyboard(),
+            reply_markup=portfolio_keyboard(),
         )
 
 
@@ -399,16 +405,6 @@ async def disconnect_binance_callback(callback: CallbackQuery) -> None:
         await callback.message.edit_text(
             "Удалить зашифрованный Binance API-ключ и остановить мониторинг?",
             reply_markup=disconnect_confirm_keyboard(),
-        )
-
-
-@router.callback_query(F.data == "binance:disconnect_cancel")
-async def cancel_disconnect_callback(callback: CallbackQuery) -> None:
-    await callback.answer("Отключение отменено")
-    if isinstance(callback.message, Message):
-        await callback.message.edit_text(
-            "Отключение Binance отменено.",
-            reply_markup=panel_back_keyboard(),
         )
 
 
@@ -434,7 +430,7 @@ async def confirm_disconnect_callback(callback: CallbackQuery, database: Databas
     if isinstance(callback.message, Message):
         await callback.message.edit_text(
             "Binance отключён; зашифрованный API-ключ удалён.",
-            reply_markup=panel_back_keyboard(),
+            reply_markup=top_level_keyboard(),
         )
 
 

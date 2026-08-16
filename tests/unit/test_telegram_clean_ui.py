@@ -25,6 +25,7 @@ from pumplens.storage.models import (
     ExchangeAccountRecord,
     PortfolioSnapshotRecord,
     RiskAlertRecord,
+    SignalFeatureRecord,
     SignalRecord,
     SpotHoldingRecord,
     UserRecord,
@@ -37,6 +38,7 @@ from pumplens.telegram.clean_ui import (
     clean_screen_callback,
     clean_start_handler,
 )
+from pumplens.telegram.handlers import why_handler
 from pumplens.telegram.keyboards import (
     early_keyboard,
     main_reply_keyboard,
@@ -693,3 +695,59 @@ async def test_already_deleted_signal_is_terminal_and_history_survives(
         assert stored is not None and stored.deleted_at is not None
         assert stored.cleanup_error == "already_deleted"
     assert "SOLUSDT" in await _history_text(database)
+
+
+async def test_stage_c_why_coexists_with_parent_navigation(database: Database) -> None:
+    """Stage C explanations must not regress Reply Keyboard navigation."""
+
+    now = datetime.now(UTC)
+    async with database.session() as session, session.begin():
+        signal = SignalRecord(
+            symbol="BTCUSDT",
+            direction="LONG",
+            state="WATCH",
+            score=82,
+            entry_quality=67,
+            final_decision="WAIT_RETEST",
+        )
+        session.add(signal)
+        await session.flush()
+        session.add(
+            SignalFeatureRecord(
+                signal_id=signal.id,
+                ts=now,
+                features_json={
+                    "last_price": 100,
+                    "entry_analysis": {
+                        "entry_quality": 67,
+                        "final_decision": "WAIT_RETEST",
+                        "positive_reasons": ["BREAKOUT_CONFIRMED"],
+                        "negative_reasons": [],
+                    },
+                },
+                penalties_json=[],
+                raw_score=82,
+                stage_c_json={"final_decision": "WAIT_RETEST"},
+                entry_quality=67,
+                final_decision="WAIT_RETEST",
+                reason_codes_json=["BREAKOUT_CONFIRMED", "WAIT_RETEST"],
+            )
+        )
+
+    message = cast(
+        Any,
+        SimpleNamespace(text="/why BTCUSDT", answer=AsyncMock()),
+    )
+    await why_handler(message, database)
+
+    explanation = message.answer.await_args.args[0]
+    assert "Entry Quality: 67/100" in explanation
+    assert "Решение:" in explanation
+    assert "WAIT_RETEST" not in explanation
+
+    buttons = _inline_buttons(portfolio_keyboard("spot"))
+    assert any(
+        getattr(button, "callback_data", None) == "screen:portfolio:overview"
+        for button in buttons
+    )
+    assert all(getattr(button, "callback_data", None) != "menu:back" for button in buttons)

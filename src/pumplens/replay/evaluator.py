@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import structlog
-from sqlalchemy import or_, select
+from sqlalchemy import and_, func, or_, select
 
 from pumplens.binance.public_rest import BinancePublicClient
 from pumplens.domain.enums import Direction
@@ -27,10 +27,14 @@ class SignalOutcomeEvaluator:
         rest_base_url: str,
         *,
         interval_seconds: float = 30.0,
+        batch_size: int = 5,
+        request_spacing_seconds: float = 0.2,
     ) -> None:
         self._database = database
         self._rest_base_url = rest_base_url
         self._interval_seconds = interval_seconds
+        self._batch_size = batch_size
+        self._request_spacing_seconds = request_spacing_seconds
 
     async def run(self) -> None:
         async with BinancePublicClient(self._rest_base_url) as client:
@@ -43,6 +47,7 @@ class SignalOutcomeEvaluator:
 
     async def evaluate_once(self, client: BinancePublicClient) -> None:
         now = datetime.now(UTC)
+        observed_at = func.coalesce(SignalRecord.watch_at, SignalRecord.candidate_at)
         async with self._database.session() as session:
             rows = (
                 await session.execute(
@@ -52,20 +57,32 @@ class SignalOutcomeEvaluator:
                         SignalOutcomeRecord.signal_id == SignalRecord.id,
                     )
                     .where(
-                        SignalRecord.trigger_price.is_not(None),
-                        SignalRecord.watch_at.is_not(None),
-                        SignalRecord.watch_at <= now - timedelta(minutes=5),
+                        SignalRecord.start_price.is_not(None),
+                        or_(
+                            SignalRecord.watch_at.is_not(None),
+                            SignalRecord.final_decision.is_not(None),
+                        ),
+                        observed_at <= now - timedelta(minutes=5),
                         or_(
                             SignalOutcomeRecord.id.is_(None),
-                            SignalOutcomeRecord.evaluated_at.is_(None),
+                            and_(
+                                SignalOutcomeRecord.evaluated_at.is_(None),
+                                or_(
+                                    SignalOutcomeRecord.last_sampled_at.is_(None),
+                                    SignalOutcomeRecord.last_sampled_at
+                                    <= now - timedelta(minutes=5),
+                                ),
+                            ),
                         ),
                     )
-                    .order_by(SignalRecord.watch_at)
-                    .limit(25)
+                    .order_by(observed_at)
+                    .limit(self._batch_size)
                 )
             ).all()
-        for signal, outcome in rows:
+        for index, (signal, outcome) in enumerate(rows):
             await self._evaluate_signal(client, signal, outcome, now)
+            if index + 1 < len(rows) and self._request_spacing_seconds > 0:
+                await asyncio.sleep(self._request_spacing_seconds)
 
     async def _evaluate_signal(
         self,
@@ -74,8 +91,9 @@ class SignalOutcomeEvaluator:
         existing: SignalOutcomeRecord | None,
         now: datetime,
     ) -> None:
-        started = _aware(signal.watch_at)
-        if started is None or signal.trigger_price is None:
+        started = _aware(signal.watch_at or signal.candidate_at)
+        entry_price = signal.trigger_price or signal.start_price
+        if started is None or entry_price is None:
             return
         elapsed_minutes = (now - started).total_seconds() / 60.0
         end = min(now, started + timedelta(minutes=61))
@@ -91,7 +109,7 @@ class SignalOutcomeEvaluator:
         direction = Direction(signal.direction)
         result = evaluate_kline_outcome(
             direction,
-            float(signal.trigger_price),
+            float(entry_price),
             closed,
         )
         prices = {
@@ -115,6 +133,7 @@ class SignalOutcomeEvaluator:
             row.mfe = result.mfe_pct
             row.mae = result.mae_pct
             row.hit_rule = result.hit_rule
+            row.last_sampled_at = now
             if elapsed_minutes >= 60:
                 row.evaluated_at = now
 
@@ -165,6 +184,9 @@ class EarlyOutcomeEvaluator:
                     .limit(50)
                 )
             )
+        if not signals:
+            return
+        prices = await client.ticker_prices()
         for signal in signals:
             started = _aware(signal.early_at)
             if started is None or signal.early_price is None:
@@ -172,7 +194,9 @@ class EarlyOutcomeEvaluator:
             elapsed = (now - started).total_seconds()
             if elapsed < 0:
                 continue
-            price = await client.ticker_price(signal.symbol)
+            price = prices.get(signal.symbol)
+            if price is None:
+                continue
             await self._store_sample(signal, elapsed, price, now)
 
     async def _store_sample(

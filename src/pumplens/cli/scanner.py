@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,6 +16,7 @@ from pumplens.analytics.features import FeatureEngine
 from pumplens.analytics.fsm import SignalFSM, SignalTransition
 from pumplens.analytics.stage_a import StageAScanner
 from pumplens.analytics.stage_b import OpenInterestPoller, StageBManager
+from pumplens.analytics.stage_c import DeepEntryValidator
 from pumplens.binance.normalizer import BinanceNormalizer
 from pumplens.binance.public_rest import BinancePublicClient
 from pumplens.binance.universe import UniverseManager
@@ -126,7 +128,14 @@ async def run_scanner(
             settings.early,
         )
         stage_b = StageBManager(max_candidates=settings.scanner.max_deep_candidates)
-        signal_fsm = SignalFSM(state, settings.scanner, settings.late, settings.early)
+        stage_c = DeepEntryValidator(state, settings.stage_c)
+        signal_fsm = SignalFSM(
+            state,
+            settings.scanner,
+            settings.late,
+            settings.early,
+            settings.stage_c,
+        )
         market_ws = MarketWebSocket(
             settings.binance.websocket_base_url,
             symbols,
@@ -154,26 +163,52 @@ async def run_scanner(
             last_display = 0.0
             loop = asyncio.get_running_loop()
             while True:
+                stage_a_started = time.perf_counter()
                 candidates = stage_a.scan_once()
+                stage_a_ms = (time.perf_counter() - stage_a_started) * 1_000
                 if service_state is not None:
                     service_state.update(candidates, len(symbols))
+                stage_b_started = time.perf_counter()
                 active_symbols = stage_b.update(candidates)
                 await deep_ws.set_symbols(active_symbols)
+                deep_ranked = stage_b.rescore(
+                    candidates,
+                    settings.scanner.max_spread_pct,
+                )
+                stage_b_ms = (time.perf_counter() - stage_b_started) * 1_000
+                stage_c_started = time.perf_counter()
+                prepared_stage_c = stage_c.prepare(deep_ranked)
+                validated = await asyncio.to_thread(
+                    stage_c.validate_prepared,
+                    prepared_stage_c,
+                )
+                stage_c_ms = (time.perf_counter() - stage_c_started) * 1_000
                 deep_candidates = {
                     candidate.snapshot.symbol: candidate
-                    for candidate in stage_b.rescore(
-                        candidates,
-                        settings.scanner.max_spread_pct,
-                    )
+                    for candidate in validated
                 }
+                # Keep Stage B scoring for retained rows outside the bounded Stage C shortlist.
+                # Сохраняем Stage B score вне ограниченного shortlist Stage C.
+                for candidate in deep_ranked:
+                    deep_candidates.setdefault(candidate.snapshot.symbol, candidate)
+                decision_started = time.perf_counter()
                 for candidate in candidates:
                     selected_input = deep_candidates.get(candidate.snapshot.symbol, candidate)
                     transition = signal_fsm.advance(selected_input)
                     if transition is not None and transition_handler is not None:
                         await transition_handler(transition)
+                decision_ms = (time.perf_counter() - decision_started) * 1_000
                 now = loop.time()
                 if now - last_display >= display_seconds:
                     print(render_candidates(candidates, settings.scanner.top_limit), flush=True)
+                    log.info(
+                        "scanner_latency",
+                        stage_a_ms=round(stage_a_ms, 3),
+                        stage_b_ms=round(stage_b_ms, 3),
+                        stage_c_ms=round(stage_c_ms, 3),
+                        decision_ms=round(decision_ms, 3),
+                        stage_c_candidates=stage_c.last_processed_count,
+                    )
                     last_display = now
                 await asyncio.sleep(settings.scanner.scan_interval_seconds)
 

@@ -384,6 +384,9 @@ def format_signal(signal: SignalRecord, features: dict[str, Any]) -> str:
             "Очень ранняя аномалия. Подтверждения пока нет. "
             "Высокий риск ложного сигнала."
         )
+    analysis = features.get("entry_analysis")
+    if isinstance(analysis, dict):
+        return _format_stage_c_signal(signal, features, analysis, icon, direction_icon)
     return (
         f"{icon} <b>{html.escape(signal.state)} {signal.direction}</b> — "
         f"<b>{html.escape(signal.symbol)}</b> {direction_icon}\n"
@@ -392,6 +395,178 @@ def format_signal(signal: SignalRecord, features: dict[str, Any]) -> str:
         f"Причины: {html.escape(reason_text)}\n"
         "⚠️ Это наблюдение, не команда на вход. Score не является вероятностью прибыли."
     )
+
+
+def format_signal_explanation(
+    signal: SignalRecord,
+    features: dict[str, Any],
+) -> str:
+    """Explain the last deterministic snapshot. / Объясняет последний snapshot без LLM."""
+
+    analysis = features.get("entry_analysis")
+    if not isinstance(analysis, dict):
+        reasons = features.get("reasons", [])
+        penalties = features.get("penalties", [])
+        return "\n".join(
+            [
+                f"<b>Почему {html.escape(signal.symbol)} {signal.direction}</b>",
+                f"Signal Score: {float(signal.score):.0f}/100",
+                "Stage C ещё не был рассчитан для последнего snapshot.",
+                f"Подтверждения: {html.escape(', '.join(map(str, reasons)) or '—')}",
+                f"Штрафы: {html.escape(', '.join(map(str, penalties)) or '—')}",
+            ]
+        )
+    lines = [
+        f"<b>Почему {html.escape(signal.symbol)} {signal.direction}</b>",
+        f"Signal Score: {float(signal.score):.0f}/100",
+        f"Entry Quality: {float(analysis.get('entry_quality', 0)):.0f}/100",
+        "",
+        *_market_lines(analysis),
+        "",
+        *_level_lines(analysis),
+        "",
+        *_setup_lines(analysis),
+        "",
+        f"Решение: {_decision_text(str(analysis.get('final_decision', 'WATCH')))}",
+    ]
+    positive = analysis.get("positive_reasons", [])
+    negative = analysis.get("negative_reasons", [])
+    if positive or negative:
+        lines.append("Причины:")
+        lines.extend(
+            f"+ {_reason_text(str(code))}" for code in list(positive)[:6]
+        )
+        lines.extend(
+            f"− {_reason_text(str(code))}" for code in list(negative)[:6]
+        )
+    lines.append("\n⚠️ Объяснение наблюдения, не команда на вход.")
+    return "\n".join(lines)
+
+
+def _format_stage_c_signal(
+    signal: SignalRecord,
+    features: dict[str, Any],
+    analysis: dict[str, Any],
+    icon: str,
+    direction_icon: str,
+) -> str:
+    price = float(features.get("last_price", signal.trigger_price or signal.start_price or 0))
+    lines = [
+        f"{icon} <b>{html.escape(signal.state)} {signal.direction}</b> — "
+        f"<b>{html.escape(signal.symbol)}</b> {direction_icon}",
+        "",
+        f"Signal Score: {float(signal.score):.0f}/100",
+        f"Entry Quality: {float(analysis.get('entry_quality', 0)):.0f}/100",
+        f"Цена: {price:g}",
+        "",
+        *_market_lines(analysis),
+        "",
+        *_level_lines(analysis),
+        "",
+        *_setup_lines(analysis),
+        "",
+        f"Decision: {_decision_text(str(analysis.get('final_decision', 'WATCH')))}",
+    ]
+    positive = list(analysis.get("positive_reasons", []))
+    negative = list(analysis.get("negative_reasons", []))
+    if positive or negative:
+        lines.append("Причины:")
+        lines.extend(f"+ {_reason_text(str(code))}" for code in positive[:3])
+        lines.extend(f"− {_reason_text(str(code))}" for code in negative[:3])
+    lines.append("\n⚠️ Наблюдение, не команда на вход. Score не является вероятностью прибыли.")
+    return "\n".join(lines)
+
+
+def _market_lines(analysis: dict[str, Any]) -> list[str]:
+    one = analysis.get("structure_1m", {})
+    five = analysis.get("structure_5m", {})
+    fifteen = analysis.get("structure_15m", {})
+    return [
+        "<b>Market</b>",
+        f"• 1m: {str(one.get('structure', '—')).lower()} · {one.get('pattern', '—')}",
+        f"• 5m: {str(five.get('structure', '—')).lower()} · {five.get('pattern', '—')}",
+        f"• 15m: {str(fifteen.get('structure', '—')).lower()}",
+        f"• Alignment: {float(analysis.get('trend_alignment_score', 0)):+.0f}",
+    ]
+
+
+def _level_lines(analysis: dict[str, Any]) -> list[str]:
+    room_up = analysis.get("room_up_pct")
+    room_down = analysis.get("room_down_pct")
+    room_up_text = "—" if room_up is None else f"{float(room_up):.2f}%"
+    room_down_text = "—" if room_down is None else f"{float(room_down):.2f}%"
+    return [
+        "<b>Levels</b>",
+        f"• Support: {_zone_text(analysis.get('nearest_support'))}",
+        f"• Resistance: {_zone_text(analysis.get('nearest_resistance'))}",
+        f"• Room up/down: {room_up_text} / {room_down_text}",
+    ]
+
+
+def _setup_lines(analysis: dict[str, Any]) -> list[str]:
+    rr = analysis.get("rr")
+    rr_text = "—" if rr is None else f"{float(rr):.2f}"
+    return [
+        "<b>Setup</b>",
+        f"• Breakout: {str(analysis.get('breakout_state', 'NONE')).lower()}",
+        f"• Retest: {str(analysis.get('retest_state', 'NOT_APPLICABLE')).lower()}",
+        f"• Late: {'yes' if analysis.get('late') else 'no'} "
+        f"({float(analysis.get('late_score', 0)):.0f}/100)",
+        f"• Exhaustion: {float(analysis.get('exhaustion_score', 0)):.0f}/100",
+        f"• Invalidation: {float(analysis.get('invalidation_price', 0)):g}",
+        f"• Potential target: {float(analysis.get('potential_target', 0)):g}",
+        f"• R:R: {rr_text}",
+    ]
+
+
+def _zone_text(value: object) -> str:
+    if not isinstance(value, dict):
+        return "—"
+    return f"{float(value.get('low', 0)):g}–{float(value.get('high', 0)):g}"
+
+
+def _decision_text(code: str) -> str:
+    labels = {
+        "ENTER_CANDIDATE": "🟢 setup подтверждён для наблюдения",
+        "WAIT_RETEST": "🟠 лучше дождаться retest",
+        "WATCH": "🟡 наблюдать",
+        "SKIP_LATE": "⚫ слишком поздно",
+        "SKIP_BAD_RR": "⚫ пропустить: слабый R:R",
+        "SKIP_RESISTANCE_TOO_CLOSE": "⚫ сопротивление слишком близко",
+        "SKIP_SUPPORT_TOO_CLOSE": "⚫ поддержка слишком близко",
+        "SKIP_EXHAUSTION": "⚫ импульс выглядит истощённым",
+        "SKIP_STRUCTURE_CONFLICT": "⚫ конфликт структуры",
+        "INVALIDATED": "🔴 сценарий сломан",
+    }
+    return labels.get(code, html.escape(code))
+
+
+def _reason_text(code: str) -> str:
+    labels = {
+        "STRUCTURE_ALIGNED": "структура совпадает с направлением",
+        "BREAKOUT_CONFIRMED": "пробой подтверждён потоком",
+        "RETEST_HELD": "уровень удержан на retest",
+        "VOLUME_CONFIRMED": "объём расширился",
+        "TRADES_CONFIRMED": "частота сделок выросла",
+        "PRESSURE_CONFIRMED": "агрессивный поток подтверждает направление",
+        "OI_CONFIRMED": "OI подтверждает движение",
+        "SPREAD_HEALTHY": "спред остаётся нормальным",
+        "DEPTH_SUPPORTIVE": "стакан поддерживает направление",
+        "ROOM_AVAILABLE": "до следующего уровня есть пространство",
+        "RR_ACCEPTABLE": "гипотетический R:R приемлем",
+        "STRUCTURE_CONFLICT": "старший timeframe против направления",
+        "FAILED_BREAKOUT": "цена вернулась за пробитый уровень",
+        "RETEST_FAILED": "retest не удержал уровень",
+        "LEVEL_TOO_CLOSE": "следующий уровень слишком близко",
+        "BAD_RR": "риск велик относительно цели",
+        "LATE_ENTRY": "движение далеко ушло относительно ATR",
+        "MOMENTUM_EXHAUSTED": "есть признаки истощения импульса",
+        "TOO_FAR_FROM_VWAP": "цена далеко от VWAP",
+        "LARGE_OPPOSING_WICK": "большая встречная тень",
+        "OI_DIVERGENCE": "OI расходится с направлением",
+        "THIN_DIRECTIONAL_DEPTH": "стакан слаб в направлении движения",
+    }
+    return labels.get(code, html.escape(code.replace("_", " ").lower()))
 
 
 def signal_keyboard(symbol: str, public_base_url: str | None = None) -> InlineKeyboardMarkup:

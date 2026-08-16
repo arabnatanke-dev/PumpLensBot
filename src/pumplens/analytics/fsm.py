@@ -9,8 +9,8 @@ import structlog
 
 from pumplens.analytics.buffers import MarketState
 from pumplens.analytics.levels import SignalLevels, calculate_levels
-from pumplens.config import EarlySettings, LateSettings, ScannerSettings
-from pumplens.domain.enums import DataQuality, Direction, SignalState
+from pumplens.config import EarlySettings, LateSettings, ScannerSettings, StageCSettings
+from pumplens.domain.enums import DataQuality, Direction, EntryDecision, SignalState
 from pumplens.domain.models import Candidate, FeatureSnapshot
 
 log = structlog.get_logger(__name__)
@@ -55,11 +55,13 @@ class SignalFSM:
         scanner_settings: ScannerSettings,
         late_settings: LateSettings,
         early_settings: EarlySettings | None = None,
+        stage_c_settings: StageCSettings | None = None,
     ) -> None:
         self._market_state = state
         self._settings = scanner_settings
         self._late = late_settings
         self._early = early_settings or EarlySettings()
+        self._stage_c = stage_c_settings or StageCSettings()
         self._lifecycles: dict[tuple[str, Direction], SignalLifecycle] = {}
 
     def lifecycle(self, symbol: str, direction: Direction) -> SignalLifecycle:
@@ -105,6 +107,26 @@ class SignalFSM:
                 )
             return None
 
+        analysis = snapshot.entry_analysis
+        if (
+            analysis is not None
+            and analysis.final_decision is EntryDecision.INVALIDATED
+            and lifecycle.state
+            in {
+                SignalState.CANDIDATE,
+                SignalState.EARLY,
+                SignalState.WATCH,
+                SignalState.CONFIRMED,
+            }
+        ):
+            return self._transition(
+                lifecycle,
+                SignalState.INVALIDATED,
+                "STAGE_C_INVALIDATED",
+                now,
+                snapshot,
+            )
+
         # TOO_LATE wins over confirmation in the same measurement.
         # TOO_LATE имеет приоритет над подтверждением в одном измерении.
         if candidate.hard_reject_reason == "too_late" and lifecycle.state not in {
@@ -123,6 +145,17 @@ class SignalFSM:
             return self._transition(lifecycle, SignalState.TOO_LATE, "TOO_LATE", now, snapshot)
 
         if lifecycle.state is SignalState.NORMAL:
+            if (
+                candidate.hard_reject_reason == "too_late"
+                and snapshot.entry_analysis is not None
+            ):
+                return self._transition(
+                    lifecycle,
+                    SignalState.TOO_LATE,
+                    "STAGE_C_LATE",
+                    now,
+                    snapshot,
+                )
             if candidate.selected and candidate.hard_reject_reason is None:
                 lifecycle.start_price = snapshot.last_price
                 return self._transition(
@@ -146,9 +179,28 @@ class SignalFSM:
                     early_snapshot,
                 )
             if (
+                analysis is not None
+                and analysis.final_decision
+                in {
+                    EntryDecision.SKIP_BAD_RR,
+                    EntryDecision.SKIP_RESISTANCE_TOO_CLOSE,
+                    EntryDecision.SKIP_SUPPORT_TOO_CLOSE,
+                    EntryDecision.SKIP_EXHAUSTION,
+                    EntryDecision.SKIP_STRUCTURE_CONFLICT,
+                }
+            ):
+                return self._transition(
+                    lifecycle,
+                    SignalState.INVALIDATED,
+                    f"STAGE_C_{analysis.final_decision.value}",
+                    now,
+                    snapshot,
+                )
+            if (
                 self._watch_confirmations(candidate)
                 and snapshot.score >= self._settings.watch_score
-                and snapshot.deep_data_ready
+                and self._market_confirmation_ready(snapshot)
+                and self._stage_c_allows_watch(snapshot)
             ):
                 lifecycle.trigger_price = snapshot.last_price
                 lifecycle.levels = self._calculate_levels(lifecycle, snapshot)
@@ -173,7 +225,8 @@ class SignalFSM:
             if (
                 self._watch_confirmations(candidate)
                 and snapshot.score >= self._settings.watch_score
-                and snapshot.deep_data_ready
+                and self._market_confirmation_ready(snapshot)
+                and self._stage_c_allows_watch(snapshot)
             ):
                 lifecycle.trigger_price = snapshot.last_price
                 lifecycle.levels = self._calculate_levels(lifecycle, snapshot)
@@ -211,7 +264,11 @@ class SignalFSM:
                     snapshot,
                 )
 
-            if snapshot.deep_data_ready and snapshot.score >= self._settings.confirmed_score:
+            if (
+                self._market_confirmation_ready(snapshot)
+                and snapshot.score >= self._settings.confirmed_score
+                and self._stage_c_allows_watch(snapshot)
+            ):
                 lifecycle.confirmed_score_since = lifecycle.confirmed_score_since or now
                 if now - lifecycle.confirmed_score_since >= timedelta(seconds=5):
                     lifecycle.confirmed_at = now
@@ -309,6 +366,22 @@ class SignalFSM:
             and bool({"pressure", "trade_rate"} & confirmations)
         )
 
+    def _stage_c_allows_watch(self, snapshot: FeatureSnapshot) -> bool:
+        if not self._stage_c.enabled or not self._stage_c.require_for_watch:
+            return True
+        analysis = snapshot.entry_analysis
+        if analysis is None or analysis.entry_quality < self._stage_c.min_entry_quality:
+            return False
+        return analysis.final_decision in {
+            EntryDecision.ENTER_CANDIDATE,
+            EntryDecision.WATCH,
+        }
+
+    def _market_confirmation_ready(self, snapshot: FeatureSnapshot) -> bool:
+        if self._stage_c.enabled and self._stage_c.require_for_watch:
+            return snapshot.trade_data_ready or snapshot.deep_data_ready
+        return snapshot.deep_data_ready
+
     def _calculate_levels(
         self,
         lifecycle: SignalLifecycle,
@@ -316,12 +389,20 @@ class SignalFSM:
     ) -> SignalLevels:
         buffer = self._market_state.get(snapshot.symbol)
         recent = list(buffer.closed_klines) if buffer is not None else []
-        return calculate_levels(
+        levels = calculate_levels(
             snapshot.direction,
             lifecycle.start_price or snapshot.last_price,
             snapshot.last_price,
             recent,
             self._late,
+        )
+        analysis = snapshot.entry_analysis
+        if analysis is None:
+            return levels
+        return replace(
+            levels,
+            invalidation=analysis.invalidation_price,
+            risk_distance_pct=analysis.risk_pct,
         )
 
     def _early_limit_crossed(self, snapshot: FeatureSnapshot) -> bool:
@@ -478,5 +559,15 @@ class SignalFSM:
             to_state=target.value,
             reason=reason,
             score=snapshot.score,
+            entry_quality=(
+                snapshot.entry_analysis.entry_quality
+                if snapshot.entry_analysis is not None
+                else None
+            ),
+            decision=(
+                snapshot.entry_analysis.final_decision.value
+                if snapshot.entry_analysis is not None
+                else None
+            ),
         )
         return transition

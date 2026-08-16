@@ -152,7 +152,11 @@ def test_deep_data_requires_fresh_trade_depth_and_open_interest() -> None:
     buffer.record_open_interest(OpenInterestPoint("TESTUSDT", 1_000, 1))
     engine = FeatureEngine(state, stale_after_seconds=12, oi_stale_after_seconds=60)
 
-    assert engine.snapshot_all()[0].deep_data_ready is True
+    snapshot = engine.snapshot_all()[0]
+    assert snapshot.trade_data_ready is True
+    assert snapshot.depth_data_ready is True
+    assert snapshot.oi_data_ready is True
+    assert snapshot.deep_data_ready is True
 
     for timestamp_name in ("last_trade_at", "last_depth_at", "last_oi_at"):
         received_at = getattr(buffer, timestamp_name)

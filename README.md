@@ -3,13 +3,15 @@
 PumpLens is an explainable anomaly scanner for Binance USDⓈ-M perpetual futures.
 PumpLens — объяснимый сканер аномалий бессрочных USDⓈ-M фьючерсов Binance.
 
-The repository contains the public scanner, Stage B, signal FSM, Telegram onboarding
-and delivery, PostgreSQL persistence, protected Mini App, encrypted read-only Binance
+The repository contains the public scanner, Stage B, bounded Stage C entry validation,
+signal FSM, Telegram onboarding and delivery, PostgreSQL persistence, protected Mini App,
+encrypted read-only Binance
 connections, portfolio reconciliation, replay, and Docker deployment. No Binance or
 Telegram key is needed to run the standalone market scanner.
 
-В репозитории есть публичный сканер, Stage B, FSM сигналов, Telegram onboarding и
-доставка, PostgreSQL, защищённая Mini App, зашифрованное read-only подключение Binance,
+В репозитории есть публичный сканер, Stage B, ограниченный Stage C, FSM сигналов,
+Telegram onboarding и доставка, PostgreSQL, защищённая Mini App, зашифрованное read-only
+подключение Binance,
 портфель, replay и Docker-развёртывание. Для отдельного рыночного CLI-сканера ключи не
 нужны.
 
@@ -115,11 +117,14 @@ Implemented / Реализовано:
 - ring buffers and deterministic features;
 - Stage A score and CLI top candidates;
 - dynamic trade/depth Stage B and OI polling;
+- bounded Stage C market structure, support/resistance zones, breakout/retest,
+  ATR/VWAP late detection, exhaustion, hypothetical R:R, and Entry Quality;
 - debounced signal FSM and human-readable levels;
 - Telegram invite onboarding, top/status/portfolio, and persistent delivery queue;
 - real-time Spot/Futures private account monitoring with periodic REST reconciliation;
 - persistent portfolio alerts: match, opposite position, margin, PnL, and stale data;
-- `/binance`, `/portfolio`, `/positions`, `/history`, and `/stats` Telegram flows;
+- `/binance`, `/portfolio`, `/positions`, `/history`, `/stats`, and deterministic
+  `/why SYMBOL` Telegram flows;
 - EARLY anomaly radar with liquidity-aware activity floors, short rearm, shadow
   persistence, replay outcomes, and `/early_stats`;
 - mobile Binance app bridge with a Web fallback;

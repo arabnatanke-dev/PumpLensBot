@@ -171,6 +171,7 @@ async def test_watch_transition_creates_one_user_delivery(database: Database) ->
     fanout = TransitionFanout(database)
     await fanout(candidate_transition)
     await fanout(watch_transition)
+    await fanout(watch_transition)
 
     async with database.session() as session:
         deliveries = list(await session.scalars(select(DeliveryRecord)))

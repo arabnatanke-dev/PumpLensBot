@@ -163,6 +163,20 @@ class BinancePublicClient:
             raise BinancePublicError("ticker price response is invalid")
         return float(payload["price"])
 
+    async def ticker_prices(self) -> dict[str, float]:
+        """Fetch all latest prices in one public request. / Получает все цены одним запросом."""
+
+        # Binance USD-M Symbol Price Ticker V2 returns an array when symbol is omitted.
+        # Binance USD-M Symbol Price Ticker V2 без symbol возвращает массив цен.
+        payload = await self._get("/fapi/v2/ticker/price", weight=2)
+        if not isinstance(payload, list):
+            raise BinancePublicError("all-symbol ticker price response is invalid")
+        return {
+            str(row["symbol"]): float(row["price"])
+            for row in payload
+            if isinstance(row, Mapping) and "symbol" in row and "price" in row
+        }
+
     @staticmethod
     def _parse_symbol(row: Mapping[str, Any]) -> SymbolSpec:
         filters = tuple(row.get("filters", ()))

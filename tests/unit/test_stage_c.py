@@ -444,9 +444,13 @@ async def test_stage_c_snapshot_is_persisted_and_explainable() -> None:
         assert "RETEST_HELD" in feature.reason_codes_json
         message = format_signal(signal, feature.features_json)
         explanation = format_signal_explanation(signal, feature.features_json)
+        assert len(message) < 4_096
+        assert "Signal Score" in message
         assert "Entry Quality" in message
+        assert "Decision:" in message
         assert "R:R" in message
         assert "Почему" in explanation
+        assert "Entry Quality" in explanation
         assert "не команда на вход" in explanation
     finally:
         await database.dispose()

@@ -27,10 +27,14 @@ class SignalOutcomeEvaluator:
         rest_base_url: str,
         *,
         interval_seconds: float = 30.0,
+        batch_size: int = 5,
+        request_spacing_seconds: float = 0.2,
     ) -> None:
         self._database = database
         self._rest_base_url = rest_base_url
         self._interval_seconds = interval_seconds
+        self._batch_size = batch_size
+        self._request_spacing_seconds = request_spacing_seconds
 
     async def run(self) -> None:
         async with BinancePublicClient(self._rest_base_url) as client:
@@ -72,11 +76,13 @@ class SignalOutcomeEvaluator:
                         ),
                     )
                     .order_by(observed_at)
-                    .limit(25)
+                    .limit(self._batch_size)
                 )
             ).all()
-        for signal, outcome in rows:
+        for index, (signal, outcome) in enumerate(rows):
             await self._evaluate_signal(client, signal, outcome, now)
+            if index + 1 < len(rows) and self._request_spacing_seconds > 0:
+                await asyncio.sleep(self._request_spacing_seconds)
 
     async def _evaluate_signal(
         self,
@@ -178,6 +184,9 @@ class EarlyOutcomeEvaluator:
                     .limit(50)
                 )
             )
+        if not signals:
+            return
+        prices = await client.ticker_prices()
         for signal in signals:
             started = _aware(signal.early_at)
             if started is None or signal.early_price is None:
@@ -185,7 +194,9 @@ class EarlyOutcomeEvaluator:
             elapsed = (now - started).total_seconds()
             if elapsed < 0:
                 continue
-            price = await client.ticker_price(signal.symbol)
+            price = prices.get(signal.symbol)
+            if price is None:
+                continue
             await self._store_sample(signal, elapsed, price, now)
 
     async def _store_sample(

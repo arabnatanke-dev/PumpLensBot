@@ -223,7 +223,7 @@ class PortfolioSettings(StrictModel):
 class ReplaySettings(StrictModel):
     enabled: bool = True
     record_path: str = "data/market.jsonl"
-    queue_size: PositiveInt = 50_000
+    queue_size: PositiveInt = 100_000
     batch_size: PositiveInt = 500
     flush_interval_seconds: PositiveFloat = 0.5
     max_file_size_mb: PositiveInt = 200

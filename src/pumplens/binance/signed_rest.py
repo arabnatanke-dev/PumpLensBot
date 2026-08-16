@@ -127,6 +127,30 @@ class BinanceReadOnlyClient:
             if isinstance(item, Mapping) and "symbol" in item and "price" in item
         }
 
+    async def simple_earn_flexible_positions(self) -> list[Mapping[str, Any]]:
+        """Read every Flexible Earn page. / Читает все страницы Flexible Earn."""
+
+        return await self._simple_earn_positions(
+            "/sapi/v1/simple-earn/flexible/position"
+        )
+
+    async def simple_earn_locked_positions(self) -> list[Mapping[str, Any]]:
+        """Read every Locked Earn page. / Читает все страницы Locked Earn."""
+
+        return await self._simple_earn_positions("/sapi/v1/simple-earn/locked/position")
+
+    async def funding_wallet(self) -> list[Mapping[str, Any]]:
+        """Read Funding wallet without exposing transfer methods. / Читает Funding wallet."""
+
+        payload = await self._signed_request(
+            self._spot,
+            "POST",
+            "/sapi/v1/asset/get-funding-asset",
+        )
+        if not isinstance(payload, list) or not all(isinstance(item, Mapping) for item in payload):
+            raise BinanceCredentialError("funding_wallet_response_invalid")
+        return payload
+
     async def start_futures_user_stream(self) -> str:
         """Create a USD-M listen key. / Создаёт listen key USD-M."""
 
@@ -170,19 +194,54 @@ class BinanceReadOnlyClient:
         path: str,
         params: Mapping[str, str | int] | None = None,
     ) -> Any:
+        return await self._signed_request(client, "GET", path, params)
+
+    async def _signed_request(
+        self,
+        client: httpx.AsyncClient,
+        method: str,
+        path: str,
+        params: Mapping[str, str | int] | None = None,
+    ) -> Any:
         query: dict[str, str | int] = dict(params or {})
         query["timestamp"] = int(time.time() * 1_000)
         query["recvWindow"] = 5_000
         query = dict(sorted(query.items()))
         query["signature"] = self._signature(query)
         try:
-            response = await client.get(path, params=query)
+            if method == "POST":
+                response = await client.post(path, data=query)
+            else:
+                response = await client.get(path, params=query)
             response.raise_for_status()
             return response.json()
         except (httpx.HTTPError, ValueError) as exc:
             # Do not leak response bodies: exchanges may echo request details.
             # Не выводим response body: биржа может вернуть детали запроса.
             raise BinanceCredentialError("binance_read_verification_failed") from exc
+
+    async def _simple_earn_positions(self, path: str) -> list[Mapping[str, Any]]:
+        rows: list[Mapping[str, Any]] = []
+        page = 1
+        size = 100
+        while True:
+            payload = await self._signed_get(
+                self._spot,
+                path,
+                {"current": page, "size": size},
+            )
+            if not isinstance(payload, Mapping):
+                raise BinanceCredentialError("simple_earn_response_invalid")
+            page_rows = payload.get("rows")
+            if not isinstance(page_rows, list) or not all(
+                isinstance(item, Mapping) for item in page_rows
+            ):
+                raise BinanceCredentialError("simple_earn_rows_invalid")
+            rows.extend(page_rows)
+            total = int(payload.get("total", len(rows)))
+            if len(page_rows) < size or len(rows) >= total:
+                return rows
+            page += 1
 
     def _signature(self, params: Mapping[str, str | int]) -> str:
         # Binance signs parameters in alphabetical order for WebSocket requests;

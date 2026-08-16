@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
 from aiogram import Bot
@@ -20,14 +22,18 @@ from pumplens.storage.models import (
     Base,
     DeliveryRecord,
     ExchangeAccountRecord,
+    PortfolioSnapshotRecord,
     RiskAlertRecord,
     SignalRecord,
+    SpotHoldingRecord,
     UserRecord,
 )
 from pumplens.telegram.clean_ui import (
     _edit_callback,
     _history_text,
+    _refresh_portfolio,
     clean_reply_menu_handler,
+    clean_screen_callback,
     clean_start_handler,
 )
 from pumplens.telegram.keyboards import main_reply_keyboard, welcome_keyboard
@@ -168,7 +174,7 @@ async def test_onboarding_edits_the_same_message(database: Database) -> None:
 
 
 async def test_reply_button_is_deleted_and_opens_section(database: Database) -> None:
-    await _user(database)
+    await _user(database, panel_id=77)
     bot = FakeBot()
     message = cast(
         Any,
@@ -189,10 +195,11 @@ async def test_reply_button_is_deleted_and_opens_section(database: Database) -> 
         ServiceState(),
     )
     assert bot.deleted == [(42, 66)]
-    assert bot.sent == [42]
+    assert bot.edits == [77]
+    assert bot.sent == []
 
 
-async def test_completed_start_uses_reply_menu_not_saved_floating_panel(
+async def test_completed_start_updates_saved_content_screen(
     database: Database,
 ) -> None:
     await _user(database, panel_id=77)
@@ -218,9 +225,90 @@ async def test_completed_start_uses_reply_menu_not_saved_floating_panel(
         AppSettings.model_validate({"onboarding": {"invite_only": False}}),
     )
     assert bot.deleted == [(42, 67)]
-    assert bot.edits == []
-    assert bot.sent == [42]
-    assert bot.sent_markups == [main_reply_keyboard()]
+    assert bot.edits == [77]
+    assert bot.sent == []
+
+
+async def test_portfolio_inline_tab_edits_the_saved_screen(database: Database) -> None:
+    user = await _user(database, panel_id=77)
+    async with database.session() as session, session.begin():
+        account = ExchangeAccountRecord(
+            user_id=user.id,
+            exchange="BINANCE",
+            permissions_json={},
+            key_last4="1234",
+        )
+        session.add(account)
+        await session.flush()
+        session.add(
+            PortfolioSnapshotRecord(
+                exchange_account_id=account.id,
+                ts=datetime.now(UTC),
+                spot_value=Decimal("10"),
+                futures_wallet=Decimal("0"),
+                available=Decimal("0"),
+                unrealized_pnl=Decimal("0"),
+                earn_value=Decimal("0"),
+                funding_value=Decimal("0"),
+                source_status_json={},
+                data_quality="FRESH",
+            )
+        )
+        session.add(
+            SpotHoldingRecord(
+                exchange_account_id=account.id,
+                asset="USDT",
+                free=Decimal("10"),
+                locked=Decimal("0"),
+                value_usdt=Decimal("10"),
+            )
+        )
+    callback = cast(
+        Any,
+        SimpleNamespace(
+            data="screen:portfolio:spot",
+            from_user=SimpleNamespace(id=42),
+            message=SimpleNamespace(chat=SimpleNamespace(id=42), message_id=77),
+            answer=AsyncMock(),
+        ),
+    )
+    bot = FakeBot()
+    await clean_screen_callback(
+        callback,
+        cast(Bot, cast(Any, bot)),
+        database,
+        AppSettings(),
+        RuntimeSecrets(),
+        ConnectSessionStore(),
+        ServiceState(),
+        cast(Any, None),
+    )
+    assert bot.edits == [77]
+    assert bot.sent == []
+
+
+async def test_manual_refresh_invokes_existing_reconciler(database: Database) -> None:
+    user = await _user(database, panel_id=77)
+    async with database.session() as session, session.begin():
+        account = ExchangeAccountRecord(
+            user_id=user.id,
+            exchange="BINANCE",
+            permissions_json={},
+            key_last4="1234",
+        )
+        session.add(account)
+        await session.flush()
+        account_id = account.id
+
+    calls: list[object] = []
+
+    class FakeReconciler:
+        async def reconcile_now(self, received_account_id: object) -> bool:
+            calls.append(received_account_id)
+            return True
+
+    await _refresh_portfolio(database, cast(Any, FakeReconciler()), 42)
+    assert calls == [account_id]
 
 
 async def test_signal_delivery_persists_message_and_delete_after(database: Database) -> None:

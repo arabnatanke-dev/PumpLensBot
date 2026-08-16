@@ -7,7 +7,13 @@ from collections.abc import Sequence
 
 from pumplens.analytics.early_stats import EarlyStatistics
 from pumplens.domain.models import Candidate
-from pumplens.storage.models import PortfolioSnapshotRecord, PositionRecord
+from pumplens.storage.models import (
+    EarnHoldingRecord,
+    FundingHoldingRecord,
+    PortfolioSnapshotRecord,
+    PositionRecord,
+    SpotHoldingRecord,
+)
 
 
 def format_top(candidates: Sequence[Candidate]) -> str:
@@ -31,16 +37,71 @@ def format_portfolio(
     positions: Sequence[PositionRecord],
 ) -> str:
     total = snapshot.spot_value + snapshot.futures_wallet
+    if snapshot.earn_value is not None:
+        total += snapshot.earn_value
+    if snapshot.funding_value is not None:
+        total += snapshot.funding_value
     lines = [
         "<b>💼 Binance Portfolio</b>",
         f"Общая стоимость: {total:.2f} USDT",
         f"Spot: {snapshot.spot_value:.2f} USDT",
         f"Futures wallet: {snapshot.futures_wallet:.2f} USDT",
+        _optional_source_line("Earn", snapshot.earn_value),
+        _optional_source_line("Funding", snapshot.funding_value),
         f"Доступно на Futures: {snapshot.available:.2f} USDT",
         f"Нереализованный PnL: {snapshot.unrealized_pnl:+.2f} USDT",
         f"Открытые позиции: {len(positions)}",
         f"Качество данных: {html.escape(snapshot.data_quality)}",
     ]
+    unavailable = [
+        source
+        for source, status in (snapshot.source_status_json or {}).items()
+        if status == "UNAVAILABLE"
+    ]
+    if unavailable:
+        lines.append("⚠️ Часть источников недоступна: " + ", ".join(unavailable))
+    return "\n".join(lines)
+
+
+def format_spot(holdings: Sequence[SpotHoldingRecord]) -> str:
+    if not holdings:
+        return "<b>💰 Spot</b>\nНенулевых активов нет."
+    lines = ["<b>💰 Spot</b>"]
+    for holding in holdings[:15]:
+        amount = holding.free + holding.locked
+        lines.append(
+            f"• <b>{html.escape(holding.asset)}</b> · {amount:.8f} · "
+            f"{_value_text(holding.value_usdt)}"
+        )
+    return "\n".join(lines)
+
+
+def format_earn(holdings: Sequence[EarnHoldingRecord], status: dict[str, str]) -> str:
+    lines = ["<b>🌱 Simple Earn</b>"]
+    if not holdings:
+        lines.append("Активных Flexible/Locked позиций нет.")
+    for holding in holdings[:15]:
+        lines.append(
+            f"• <b>{html.escape(holding.asset)}</b> · {holding.product_type} · "
+            f"{holding.amount:.8f} · {_value_text(holding.value_usdt)}"
+        )
+    _append_source_warnings(lines, status, ("earn_flexible", "earn_locked"))
+    return "\n".join(lines)
+
+
+def format_funding(
+    holdings: Sequence[FundingHoldingRecord],
+    status: dict[str, str],
+) -> str:
+    lines = ["<b>👛 Funding Wallet</b>"]
+    if not holdings:
+        lines.append("Ненулевых активов нет.")
+    for holding in holdings[:15]:
+        lines.append(
+            f"• <b>{html.escape(holding.asset)}</b> · {holding.amount:.8f} · "
+            f"{_value_text(holding.value_usdt)}"
+        )
+    _append_source_warnings(lines, status, ("funding",))
     return "\n".join(lines)
 
 
@@ -55,6 +116,40 @@ def format_positions(positions: Sequence[PositionRecord]) -> str:
             f"PnL {position.pnl:+.2f} USDT · Liq {liquidation}"
         )
     return "\n".join(lines)
+
+
+def format_futures(
+    snapshot: PortfolioSnapshotRecord,
+    positions: Sequence[PositionRecord],
+) -> str:
+    return "\n".join(
+        [
+            "<b>📊 USDⓈ-M Futures</b>",
+            f"Wallet: {snapshot.futures_wallet:.2f} USDT",
+            f"Доступно: {snapshot.available:.2f} USDT",
+            f"Нереализованный PnL: {snapshot.unrealized_pnl:+.2f} USDT",
+            "",
+            format_positions(positions),
+        ]
+    )
+
+
+def _optional_source_line(label: str, value: object | None) -> str:
+    return f"{label}: недоступно" if value is None else f"{label}: {value:.2f} USDT"
+
+
+def _value_text(value: object | None) -> str:
+    return "оценка недоступна" if value is None else f"≈ {value:.2f} USDT"
+
+
+def _append_source_warnings(
+    lines: list[str],
+    status: dict[str, str],
+    sources: Sequence[str],
+) -> None:
+    unavailable = [source for source in sources if status.get(source) == "UNAVAILABLE"]
+    if unavailable:
+        lines.append("⚠️ Источник сейчас недоступен; показаны последние сохранённые данные.")
 
 
 def format_early_statistics(stats: EarlyStatistics) -> str:

@@ -127,6 +127,9 @@ def test_schema_contains_all_mvp_tables() -> None:
         "exchange_accounts",
         "encrypted_credentials",
         "portfolio_snapshots",
+        "spot_holdings",
+        "earn_holdings",
+        "funding_holdings",
         "positions",
         "risk_alerts",
         "deliveries",
@@ -175,7 +178,7 @@ async def test_watch_transition_creates_one_user_delivery(database: Database) ->
         assert deliveries[0].stage == SignalState.WATCH.value
 
 
-def test_migrations_upgrade_through_telegram_clean_ui(
+def test_migrations_upgrade_through_full_portfolio(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -192,6 +195,40 @@ def test_migrations_upgrade_through_telegram_clean_ui(
             row[1] for row in connection.execute("PRAGMA table_info(deliveries)").fetchall()
         }
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
+        snapshot_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(portfolio_snapshots)").fetchall()
+        }
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
     assert "telegram_panel_message_id" in user_columns
     assert {"delete_after", "deleted_at", "cleanup_error"} <= delivery_columns
-    assert revision == ("0005_telegram_clean_ui",)
+    assert {"earn_value", "funding_value", "source_status_json"} <= snapshot_columns
+    assert {"earn_holdings", "funding_holdings"} <= tables
+    assert revision == ("0006_full_portfolio",)
+
+
+def test_existing_0005_database_upgrades_to_0006(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = Path(__file__).parents[2]
+    database_path = tmp_path / "migration-from-0005.sqlite"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{database_path}")
+    config = Config(root / "alembic.ini")
+    command.upgrade(config, "0005_telegram_clean_ui")
+    command.upgrade(config, "head")
+    with sqlite3.connect(database_path) as connection:
+        revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+    assert revision == ("0006_full_portfolio",)
+    assert {"earn_holdings", "funding_holdings"} <= tables

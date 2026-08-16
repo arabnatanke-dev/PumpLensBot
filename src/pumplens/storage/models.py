@@ -262,6 +262,13 @@ class PortfolioSnapshotRecord(UUIDPrimaryKey, Base):
     futures_wallet: Mapped[Decimal] = mapped_column(Numeric(38, 18), default=0)
     available: Mapped[Decimal] = mapped_column(Numeric(38, 18), default=0)
     unrealized_pnl: Mapped[Decimal] = mapped_column(Numeric(38, 18), default=0)
+    earn_value: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
+    funding_value: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
+    source_status_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON,
+        default=dict,
+        nullable=False,
+    )
     data_quality: Mapped[str] = mapped_column(String(24), nullable=False)
 
 
@@ -279,6 +286,54 @@ class SpotHoldingRecord(UUIDPrimaryKey, Timestamped, Base):
     asset: Mapped[str] = mapped_column(String(32), nullable=False)
     free: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
     locked: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
+    value_usdt: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
+
+
+class EarnHoldingRecord(UUIDPrimaryKey, Timestamped, Base):
+    """Read-only Simple Earn position. / Read-only позиция Simple Earn."""
+
+    __tablename__ = "earn_holdings"
+    __table_args__ = (
+        UniqueConstraint(
+            "exchange_account_id",
+            "product_type",
+            "product_id",
+            "asset",
+            name="uq_earn_account_product_asset",
+        ),
+        Index("ix_earn_account_asset", "exchange_account_id", "asset"),
+    )
+
+    exchange_account_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("exchange_accounts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    asset: Mapped[str] = mapped_column(String(32), nullable=False)
+    product_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    product_id: Mapped[str | None] = mapped_column(String(128))
+    amount: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
+    value_usdt: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
+
+
+class FundingHoldingRecord(UUIDPrimaryKey, Timestamped, Base):
+    """Read-only Funding wallet holding. / Read-only актив Funding wallet."""
+
+    __tablename__ = "funding_holdings"
+    __table_args__ = (
+        UniqueConstraint(
+            "exchange_account_id",
+            "asset",
+            name="uq_funding_account_asset",
+        ),
+        Index("ix_funding_account_asset", "exchange_account_id", "asset"),
+    )
+
+    exchange_account_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("exchange_accounts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    asset: Mapped[str] = mapped_column(String(32), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
     value_usdt: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
 
 

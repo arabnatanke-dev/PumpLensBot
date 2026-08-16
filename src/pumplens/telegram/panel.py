@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramNotFound
-from aiogram.types import InlineKeyboardMarkup, Message
+from aiogram.types import InlineKeyboardMarkup, Message, ReplyKeyboardMarkup
 from sqlalchemy import select
 
 from pumplens.storage.db import Database
@@ -18,8 +18,9 @@ async def show_or_edit_panel(
     telegram_user_id: int,
     chat_id: int,
     text: str,
-    reply_markup: InlineKeyboardMarkup,
+    reply_markup: InlineKeyboardMarkup | ReplyKeyboardMarkup | None,
     message_id: int | None = None,
+    force_send: bool = False,
 ) -> int:
     """Edit the persistent panel or recreate it safely. / Редактирует или создаёт панель."""
 
@@ -28,14 +29,20 @@ async def show_or_edit_panel(
             select(UserRecord).where(UserRecord.telegram_user_id == telegram_user_id)
         )
         stored_message_id = user.telegram_panel_message_id if user is not None else None
-    target_id = message_id or stored_message_id
+    target_id = None if force_send else message_id or stored_message_id
     if target_id is not None:
         try:
+            # Telegram accepts only inline markup while editing. A persistent reply
+            # keyboard is attached when the screen is first created. / Telegram
+            # принимает при edit только inline markup; reply menu крепится при создании.
+            edit_markup = (
+                None if isinstance(reply_markup, ReplyKeyboardMarkup) else reply_markup
+            )
             await bot.edit_message_text(
                 text,
                 chat_id=chat_id,
                 message_id=target_id,
-                reply_markup=reply_markup,
+                reply_markup=edit_markup,
             )
             await _save_panel_id(database, telegram_user_id, target_id)
             return target_id

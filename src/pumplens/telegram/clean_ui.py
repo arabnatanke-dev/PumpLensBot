@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import html
+from contextlib import suppress
+from dataclasses import dataclass
+from decimal import Decimal
 from typing import cast
 from urllib.parse import quote
 
@@ -16,26 +19,41 @@ from pumplens.analytics.early_stats import load_early_statistics
 from pumplens.config import AppSettings, RuntimeSecrets
 from pumplens.onboarding.invites import InviteError
 from pumplens.onboarding.service import OnboardingService
+from pumplens.portfolio.service import PortfolioReconciler
 from pumplens.service_state import ServiceState
 from pumplens.storage.db import Database
 from pumplens.storage.models import (
+    EarnHoldingRecord,
     ExchangeAccountRecord,
+    FundingHoldingRecord,
     PortfolioSnapshotRecord,
     PositionRecord,
     SignalRecord,
+    SpotHoldingRecord,
     UserPreferenceRecord,
     UserRecord,
 )
-from pumplens.telegram.formatter import format_early_statistics, format_portfolio, format_positions
+from pumplens.telegram.formatter import (
+    format_early_statistics,
+    format_earn,
+    format_funding,
+    format_futures,
+    format_portfolio,
+    format_positions,
+    format_spot,
+)
 from pumplens.telegram.keyboards import (
     binance_keyboard,
     consent_keyboard,
     directions_keyboard,
+    early_keyboard,
     main_reply_keyboard,
     panel_back_keyboard,
     panel_binance_keyboard,
     panel_settings_keyboard,
+    portfolio_keyboard,
     profile_keyboard,
+    signals_keyboard,
     welcome_keyboard,
 )
 from pumplens.telegram.panel import delete_command_best_effort, show_or_edit_panel
@@ -75,9 +93,12 @@ async def clean_start_handler(
         return
     await delete_command_best_effort(bot, message)
     if complete:
-        await bot.send_message(
-            message.chat.id,
-            "<b>🤖 PumpLens</b>\nВыберите раздел в постоянном меню.",
+        await show_or_edit_panel(
+            bot,
+            database,
+            telegram_user_id=telegram_user.id,
+            chat_id=message.chat.id,
+            text="<b>🤖 PumpLens</b>\nВыберите раздел в постоянном меню.",
             reply_markup=main_reply_keyboard(),
         )
         return
@@ -220,16 +241,19 @@ async def clean_skip_binance(
         onboarding.complete(user)
     if callback.message is None:
         return
-    await bot.edit_message_text(
-        "✅ Onboarding завершён. Используйте постоянное меню ниже.",
+    new_message_id = await show_or_edit_panel(
+        bot,
+        database,
+        telegram_user_id=callback.from_user.id,
         chat_id=callback.message.chat.id,
         message_id=callback.message.message_id,
-    )
-    await bot.send_message(
-        callback.message.chat.id,
-        "<b>🤖 PumpLens</b>\nВыберите раздел.",
+        text="<b>🤖 PumpLens</b>\nВыберите раздел.",
         reply_markup=main_reply_keyboard(),
+        force_send=True,
     )
+    if new_message_id != callback.message.message_id:
+        with suppress(Exception):
+            await bot.delete_message(callback.message.chat.id, callback.message.message_id)
 
 
 @router.callback_query(F.data.startswith("panel:"))
@@ -271,6 +295,43 @@ async def clean_panel_callback(
 async def clean_menu_back(callback: CallbackQuery, bot: Bot) -> None:
     await callback.answer()
     await _show_menu_hint(callback, bot)
+
+
+@router.callback_query(F.data.startswith("screen:"))
+async def clean_screen_callback(
+    callback: CallbackQuery,
+    bot: Bot,
+    database: Database,
+    settings: AppSettings,
+    runtime: RuntimeSecrets,
+    connect_sessions: ConnectSessionStore,
+    service_state: ServiceState,
+    portfolio_reconciler: PortfolioReconciler,
+) -> None:
+    """Switch an inline tab without creating messages. / Переключает вкладку без сообщений."""
+
+    await callback.answer("Обновляю…" if ":refresh" in (callback.data or "") else None)
+    parts = (callback.data or "").split(":")
+    section = "portfolio"
+    if parts[1:3] in (["refresh", "portfolio"], ["refresh", "binance"]):
+        await _refresh_portfolio(database, portfolio_reconciler, callback.from_user.id)
+        section = "binance" if parts[2] == "binance" else "portfolio"
+    elif parts[1:2] == ["portfolio"]:
+        section = f"portfolio:{parts[2]}"
+    elif parts[1:2] == ["signals"]:
+        section = f"history:{parts[2]}"
+    elif parts[1:2] == ["early"]:
+        section = "early"
+    text, keyboard = await panel_content(
+        section,
+        callback.from_user.id,
+        database,
+        settings,
+        runtime,
+        connect_sessions,
+        service_state,
+    )
+    await _edit_callback(callback, bot, database, text, keyboard)
 
 
 async def _show_menu_hint(callback: CallbackQuery, bot: Bot) -> None:
@@ -346,9 +407,12 @@ async def clean_panel_command(
         connect_sessions,
         service_state,
     )
-    await bot.send_message(
-        message.chat.id,
-        text,
+    await show_or_edit_panel(
+        bot,
+        database,
+        telegram_user_id=message.from_user.id,
+        chat_id=message.chat.id,
+        text=text,
         reply_markup=keyboard,
     )
 
@@ -385,7 +449,14 @@ async def clean_reply_menu_handler(
         connect_sessions,
         service_state,
     )
-    await bot.send_message(message.chat.id, text, reply_markup=keyboard)
+    await show_or_edit_panel(
+        bot,
+        database,
+        telegram_user_id=message.from_user.id,
+        chat_id=message.chat.id,
+        text=text,
+        reply_markup=keyboard,
+    )
 
 
 async def panel_content(
@@ -405,24 +476,40 @@ async def panel_content(
             f"Stage B candidates: {status.candidates_count}",
             panel_back_keyboard(),
         )
-    if section in {"portfolio", "positions"}:
+    if section == "positions":
         data = await _portfolio_data(telegram_user_id, database)
         if data is None:
             return (
                 "Binance ещё не подключён или портфель не синхронизирован.",
                 panel_back_keyboard(),
             )
-        snapshot, positions = data
-        formatter = format_portfolio if section == "portfolio" else None
-        text = formatter(snapshot, positions) if formatter else format_positions(positions)
+        text = format_positions(data.positions)
         return text, panel_back_keyboard()
+    if section == "portfolio" or section.startswith("portfolio:"):
+        data = await _portfolio_data(telegram_user_id, database)
+        if data is None:
+            return (
+                "Binance ещё не подключён или портфель не синхронизирован.",
+                portfolio_keyboard(),
+            )
+        tab = section.split(":", 1)[1] if ":" in section else "overview"
+        source_status = data.snapshot.source_status_json
+        text_by_tab = {
+            "overview": format_portfolio(data.snapshot, data.positions),
+            "spot": format_spot(data.spot),
+            "futures": format_futures(data.snapshot, data.positions),
+            "earn": format_earn(data.earn, source_status),
+            "funding": format_funding(data.funding, source_status),
+        }
+        return text_by_tab.get(tab, text_by_tab["overview"]), portfolio_keyboard(tab)
     if section == "early":
         return (
             format_early_statistics(await load_early_statistics(database)),
-            panel_back_keyboard(),
+            early_keyboard(),
         )
-    if section == "history":
-        return await _history_text(database), panel_back_keyboard()
+    if section == "history" or section.startswith("history:"):
+        direction = section.split(":", 1)[1] if ":" in section else "all"
+        return await _history_text(database, direction), signals_keyboard(direction)
     if section == "settings":
         async with database.session() as session:
             user = await _user_by_telegram(session, telegram_user_id)
@@ -479,14 +566,14 @@ async def panel_content(
     return "Раздел не найден.", panel_back_keyboard()
 
 
-async def _history_text(database: Database) -> str:
+async def _history_text(database: Database, direction: str = "all") -> str:
     async with database.session() as session:
+        statement = select(SignalRecord).where(SignalRecord.watch_at.is_not(None))
+        if direction in {"long", "short"}:
+            statement = statement.where(SignalRecord.direction == direction.upper())
         signals = list(
             await session.scalars(
-                select(SignalRecord)
-                .where(SignalRecord.watch_at.is_not(None))
-                .order_by(SignalRecord.watch_at.desc())
-                .limit(10)
+                statement.order_by(SignalRecord.watch_at.desc()).limit(20)
             )
         )
     if not signals:
@@ -532,10 +619,19 @@ async def _preference_for_telegram(
     )
 
 
+@dataclass(slots=True)
+class PortfolioData:
+    snapshot: PortfolioSnapshotRecord
+    positions: list[PositionRecord]
+    spot: list[SpotHoldingRecord]
+    earn: list[EarnHoldingRecord]
+    funding: list[FundingHoldingRecord]
+
+
 async def _portfolio_data(
     telegram_user_id: int,
     database: Database,
-) -> tuple[PortfolioSnapshotRecord, list[PositionRecord]] | None:
+) -> PortfolioData | None:
     async with database.session() as session:
         user = await _user_by_telegram(session, telegram_user_id)
         if user is None:
@@ -556,7 +652,48 @@ async def _portfolio_data(
                 select(PositionRecord).where(PositionRecord.exchange_account_id == account.id)
             )
         )
-        return snapshot, positions
+        spot = list(
+            await session.scalars(
+                select(SpotHoldingRecord).where(
+                    SpotHoldingRecord.exchange_account_id == account.id
+                )
+            )
+        )
+        earn = list(
+            await session.scalars(
+                select(EarnHoldingRecord).where(
+                    EarnHoldingRecord.exchange_account_id == account.id
+                )
+            )
+        )
+        funding = list(
+            await session.scalars(
+                select(FundingHoldingRecord).where(
+                    FundingHoldingRecord.exchange_account_id == account.id
+                )
+            )
+        )
+        def value_key(
+            item: SpotHoldingRecord | EarnHoldingRecord | FundingHoldingRecord,
+        ) -> tuple[bool, Decimal]:
+            return item.value_usdt is not None, item.value_usdt or Decimal(0)
+
+        spot.sort(key=value_key, reverse=True)
+        earn.sort(key=value_key, reverse=True)
+        funding.sort(key=value_key, reverse=True)
+        return PortfolioData(snapshot, positions, spot, earn, funding)
+
+
+async def _refresh_portfolio(
+    database: Database,
+    reconciler: PortfolioReconciler,
+    telegram_user_id: int,
+) -> None:
+    async with database.session() as session:
+        user = await _user_by_telegram(session, telegram_user_id)
+        account = await _account_for_user(session, user.id) if user else None
+    if account is not None and account.status != "DISCONNECTED":
+        await reconciler.reconcile_now(account.id)
 
 
 async def _user_by_telegram(

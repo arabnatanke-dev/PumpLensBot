@@ -18,8 +18,10 @@ from pumplens.binance.signed_rest import BinanceCredentialError, BinanceReadOnly
 from pumplens.security.credential_vault import CredentialVault, EncryptedCredentials
 from pumplens.storage.db import Database
 from pumplens.storage.models import (
+    EarnHoldingRecord,
     EncryptedCredentialRecord,
     ExchangeAccountRecord,
+    FundingHoldingRecord,
     PortfolioSnapshotRecord,
     PositionRecord,
     SpotHoldingRecord,
@@ -37,8 +39,11 @@ class PortfolioSummary:
     futures_wallet: Decimal
     available: Decimal
     unrealized_pnl: Decimal
+    earn_value: Decimal | None
+    funding_value: Decimal | None
     positions_count: int
     data_quality: str
+    source_status: dict[str, str]
 
 
 class PortfolioService:
@@ -55,23 +60,54 @@ class PortfolioService:
             raise ValueError("exchange_account_not_found")
         api_key, secret_key = await self.credentials(session, exchange_account_id)
 
-        try:
-            async with BinanceReadOnlyClient(api_key, secret_key) as client:
+        async with BinanceReadOnlyClient(api_key, secret_key) as client:
+            try:
                 spot, futures, positions, prices = await asyncio.gather(
                     client.spot_account(),
                     client.futures_account(),
                     client.position_risk(),
                     client.spot_prices(),
                 )
-        except BinanceCredentialError:
-            raise
+            except BinanceCredentialError:
+                raise
+            optional = await asyncio.gather(
+                client.simple_earn_flexible_positions(),
+                client.simple_earn_locked_positions(),
+                client.funding_wallet(),
+                return_exceptions=True,
+            )
 
         spot_rows, spot_value, partial = _parse_spot(spot, prices, account.id)
         position_rows = _parse_positions(positions, account.id)
         futures_wallet = _decimal(futures.get("totalWalletBalance"))
         available = _decimal(futures.get("availableBalance"))
         unrealized = _decimal(futures.get("totalUnrealizedProfit"))
-        quality = "PARTIAL" if partial else "FRESH"
+        source_status = {
+            "spot": "PARTIAL" if partial else "FRESH",
+            "futures": "FRESH",
+        }
+        flexible_rows, flexible_value, flexible_partial = _optional_earn(
+            optional[0], "FLEXIBLE", prices, account.id
+        )
+        locked_rows, locked_value, locked_partial = _optional_earn(
+            optional[1], "LOCKED", prices, account.id
+        )
+        funding_rows, funding_value, funding_partial = _optional_funding(
+            optional[2], prices, account.id
+        )
+        source_status["earn_flexible"] = _optional_status(optional[0], flexible_partial)
+        source_status["earn_locked"] = _optional_status(optional[1], locked_partial)
+        source_status["funding"] = _optional_status(optional[2], funding_partial)
+        earn_available = not isinstance(optional[0], BaseException) and not isinstance(
+            optional[1], BaseException
+        )
+        earn_value = flexible_value + locked_value if earn_available else None
+        quality = (
+            "PARTIAL"
+            if partial
+            or any(status != "FRESH" for status in source_status.values())
+            else "FRESH"
+        )
 
         # Replace only rows for this account; tenant isolation is explicit.
         # Заменяем строки только этого аккаунта; tenant isolation указана явно.
@@ -80,10 +116,38 @@ class PortfolioService:
                 SpotHoldingRecord.exchange_account_id == account.id
             )
         )
+        if not isinstance(optional[0], BaseException):
+            await session.execute(
+                delete(EarnHoldingRecord).where(
+                    EarnHoldingRecord.exchange_account_id == account.id,
+                    EarnHoldingRecord.product_type == "FLEXIBLE",
+                )
+            )
+        if not isinstance(optional[1], BaseException):
+            await session.execute(
+                delete(EarnHoldingRecord).where(
+                    EarnHoldingRecord.exchange_account_id == account.id,
+                    EarnHoldingRecord.product_type == "LOCKED",
+                )
+            )
+        if not isinstance(optional[2], BaseException):
+            await session.execute(
+                delete(FundingHoldingRecord).where(
+                    FundingHoldingRecord.exchange_account_id == account.id
+                )
+            )
         await session.execute(
             delete(PositionRecord).where(PositionRecord.exchange_account_id == account.id)
         )
-        session.add_all([*spot_rows, *position_rows])
+        session.add_all(
+            [
+                *spot_rows,
+                *position_rows,
+                *flexible_rows,
+                *locked_rows,
+                *funding_rows,
+            ]
+        )
         session.add(
             PortfolioSnapshotRecord(
                 exchange_account_id=account.id,
@@ -92,6 +156,11 @@ class PortfolioService:
                 futures_wallet=futures_wallet,
                 available=available,
                 unrealized_pnl=unrealized,
+                earn_value=earn_value,
+                funding_value=(
+                    None if isinstance(optional[2], BaseException) else funding_value
+                ),
+                source_status_json=source_status,
                 data_quality=quality,
             )
         )
@@ -104,8 +173,11 @@ class PortfolioService:
             futures_wallet=futures_wallet,
             available=available,
             unrealized_pnl=unrealized,
+            earn_value=earn_value,
+            funding_value=(None if isinstance(optional[2], BaseException) else funding_value),
             positions_count=len(position_rows),
             data_quality=quality,
+            source_status=source_status,
         )
 
     async def credentials(
@@ -203,6 +275,14 @@ class PortfolioReconciler:
             account = await session.get(ExchangeAccountRecord, account_id)
             if account is not None:
                 account.status = "STALE"
+            latest_snapshot = await session.scalar(
+                select(PortfolioSnapshotRecord)
+                .where(PortfolioSnapshotRecord.exchange_account_id == account_id)
+                .order_by(PortfolioSnapshotRecord.ts.desc())
+                .limit(1)
+            )
+            if latest_snapshot is not None:
+                latest_snapshot.data_quality = "STALE"
 
 
 def _parse_spot(
@@ -270,6 +350,99 @@ def _parse_positions(
             )
         )
     return rows
+
+
+def _optional_earn(
+    payload: object,
+    product_type: str,
+    prices: dict[str, float],
+    account_id: uuid.UUID,
+) -> tuple[list[EarnHoldingRecord], Decimal, bool]:
+    if isinstance(payload, BaseException) or not isinstance(payload, list):
+        return [], ZERO, False
+    rows: list[EarnHoldingRecord] = []
+    total = ZERO
+    partial = False
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        asset = str(item.get("asset", ""))
+        amount_key = "totalAmount" if product_type == "FLEXIBLE" else "amount"
+        amount = _decimal(item.get(amount_key))
+        if not asset or amount <= 0:
+            continue
+        value = _value_usdt(asset, amount, prices)
+        partial = partial or value is None
+        if value is not None:
+            total += value
+        product_id = (
+            item.get("productId")
+            if product_type == "FLEXIBLE"
+            else item.get("positionId") or item.get("projectId")
+        )
+        rows.append(
+            EarnHoldingRecord(
+                exchange_account_id=account_id,
+                asset=asset,
+                product_type=product_type,
+                product_id=str(product_id) if product_id is not None else None,
+                amount=amount,
+                value_usdt=value,
+            )
+        )
+    return rows, total, partial
+
+
+def _optional_funding(
+    payload: object,
+    prices: dict[str, float],
+    account_id: uuid.UUID,
+) -> tuple[list[FundingHoldingRecord], Decimal, bool]:
+    if isinstance(payload, BaseException) or not isinstance(payload, list):
+        return [], ZERO, False
+    rows: list[FundingHoldingRecord] = []
+    total = ZERO
+    partial = False
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        asset = str(item.get("asset", ""))
+        amount = sum(
+            (_decimal(item.get(key)) for key in ("free", "locked", "freeze", "withdrawing")),
+            ZERO,
+        )
+        if not asset or amount <= 0:
+            continue
+        value = _value_usdt(asset, amount, prices)
+        partial = partial or value is None
+        if value is not None:
+            total += value
+        rows.append(
+            FundingHoldingRecord(
+                exchange_account_id=account_id,
+                asset=asset,
+                amount=amount,
+                value_usdt=value,
+            )
+        )
+    return rows, total, partial
+
+
+def _optional_status(payload: object, partial: bool) -> str:
+    if isinstance(payload, BaseException):
+        return "UNAVAILABLE"
+    return "PARTIAL" if partial else "FRESH"
+
+
+def _value_usdt(
+    asset: str,
+    amount: Decimal,
+    prices: dict[str, float],
+) -> Decimal | None:
+    if asset in {"USDT", "USDC", "FDUSD"}:
+        return amount
+    price = prices.get(f"{asset}USDT")
+    return amount * Decimal(str(price)) if price is not None else None
 
 
 def _decimal(value: object) -> Decimal:

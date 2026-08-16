@@ -131,6 +131,75 @@ def panel_back_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def portfolio_keyboard(active: str = "overview") -> InlineKeyboardMarkup:
+    """Portfolio tabs edit one content screen. / Вкладки редактируют одну карточку."""
+
+    def label(key: str, text: str) -> str:
+        return f"• {text}" if active == key else text
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=label("overview", "Обзор"),
+                    callback_data="screen:portfolio:overview",
+                ),
+                InlineKeyboardButton(
+                    text=label("spot", "Spot"),
+                    callback_data="screen:portfolio:spot",
+                ),
+                InlineKeyboardButton(
+                    text=label("futures", "Futures"),
+                    callback_data="screen:portfolio:futures",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=label("earn", "Earn"),
+                    callback_data="screen:portfolio:earn",
+                ),
+                InlineKeyboardButton(
+                    text=label("funding", "Funding"),
+                    callback_data="screen:portfolio:funding",
+                ),
+            ],
+            [InlineKeyboardButton(text="🔄 Обновить", callback_data="screen:refresh:portfolio")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:back")],
+        ]
+    )
+
+
+def signals_keyboard(direction: str = "all") -> InlineKeyboardMarkup:
+    def label(key: str, text: str) -> str:
+        return f"• {text}" if direction == key else text
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=label("all", "Все"), callback_data="screen:signals:all"
+                ),
+                InlineKeyboardButton(
+                    text=label("long", "LONG"), callback_data="screen:signals:long"
+                ),
+                InlineKeyboardButton(
+                    text=label("short", "SHORT"), callback_data="screen:signals:short"
+                ),
+            ],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:back")],
+        ]
+    )
+
+
+def early_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Обновить", callback_data="screen:early:refresh")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:back")],
+        ]
+    )
+
+
 def panel_settings_keyboard(
     *,
     profile: str,
@@ -177,6 +246,14 @@ def panel_settings_keyboard(
         rows.append(
             [
                 InlineKeyboardButton(
+                    text="🔄 Синхронизировать",
+                    callback_data="screen:refresh:binance",
+                )
+            ]
+        )
+        rows.append(
+            [
+                InlineKeyboardButton(
                     text="Отключить Binance",
                     callback_data="binance:disconnect",
                 )
@@ -196,6 +273,14 @@ def panel_binance_keyboard(
         label = "🔄 Переподключить Binance" if connected else "🔗 Подключить Binance"
         rows.append([InlineKeyboardButton(text=label, web_app=WebAppInfo(url=connect_url))])
     if connected:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="🔄 Синхронизировать",
+                    callback_data="screen:refresh:binance",
+                )
+            ]
+        )
         rows.append(
             [
                 InlineKeyboardButton(

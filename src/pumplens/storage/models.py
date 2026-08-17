@@ -210,6 +210,66 @@ class UserPreferenceRecord(UUIDPrimaryKey, Timestamped, Base):
     paused: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
+class MonitoredScenarioRecord(UUIDPrimaryKey, Timestamped, Base):
+    """Persistent one-symbol scenario. / Сохраняемый сценарий одной монеты."""
+
+    __tablename__ = "monitored_scenarios"
+    __table_args__ = (
+        Index(
+            "uq_monitored_scenarios_active_user",
+            "user_id",
+            unique=True,
+            postgresql_where=text("is_active"),
+            sqlite_where=text("is_active"),
+        ),
+        Index("ix_monitored_scenarios_symbol_status", "symbol", "status"),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    direction: Mapped[str | None] = mapped_column(String(8))
+    setup_type: Mapped[str | None] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    timeframe: Mapped[str] = mapped_column(String(8), default="1m", nullable=False)
+    trigger_level: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
+    retest_zone_low: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
+    retest_zone_high: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
+    invalidation_level: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
+    target1: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
+    target2: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
+    target3: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
+    require_volume_confirmation: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        nullable=False,
+    )
+    require_pressure_confirmation: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        nullable=False,
+    )
+    require_oi_confirmation: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+    )
+    breakout_observed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    retest_observed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    last_evaluated_candle_open_time: Mapped[int | None] = mapped_column(BigInteger)
+    latest_price: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
+    long_score: Mapped[float | None] = mapped_column(Numeric(6, 2))
+    short_score: Mapped[float | None] = mapped_column(Numeric(6, 2))
+    analysis_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    reason_code: Mapped[str | None] = mapped_column(String(64))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class InviteCodeRecord(UUIDPrimaryKey, Base):
     __tablename__ = "invite_codes"
 

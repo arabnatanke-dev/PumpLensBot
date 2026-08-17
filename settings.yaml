@@ -163,3 +163,10 @@ telegram:
   # Telegram разрешает удалять сообщения младше 48 часов.
   signal_ttl_hours: 47
   cleanup_scan_seconds: 60
+
+personal_monitor:
+  enabled: true
+  discovery_seconds: 3
+  warmup_klines: 180
+  max_active_symbols: 50
+  exchange_info_ttl_seconds: 900

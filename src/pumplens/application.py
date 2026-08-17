@@ -7,6 +7,7 @@ from pathlib import Path
 
 from pumplens.cli.scanner import run_scanner
 from pumplens.config import AppSettings, RuntimeSecrets
+from pumplens.personal_monitor.service import PersonalMonitorService
 from pumplens.portfolio.live_marks import LiveMarkPriceStore
 from pumplens.portfolio.private_stream import PrivateAccountStreamManager
 from pumplens.portfolio.risk import PortfolioRiskMonitor, RiskAlertWorker
@@ -81,6 +82,7 @@ async def run_full_service(settings: AppSettings, runtime: RuntimeSecrets) -> No
         settings.binance.rest_base_url,
         interval_seconds=settings.early.outcome_poll_seconds,
     )
+    personal_monitor = PersonalMonitorService(database, bot, settings)
     web_app = create_web_app(
         runtime=runtime,
         database=database,
@@ -110,6 +112,7 @@ async def run_full_service(settings: AppSettings, runtime: RuntimeSecrets) -> No
                     connect_sessions=connect_sessions,
                     service_state=service_state,
                     portfolio_reconciler=portfolio_reconciler,
+                    personal_monitor=personal_monitor,
                 ),
                 name="telegram-bot",
             )
@@ -125,7 +128,9 @@ async def run_full_service(settings: AppSettings, runtime: RuntimeSecrets) -> No
             group.create_task(early_outcome_evaluator.run(), name="early-outcome-evaluator")
             group.create_task(delivery_worker.run(), name="telegram-delivery")
             group.create_task(delivery_cleanup.run(), name="telegram-signal-cleanup")
+            group.create_task(personal_monitor.run(), name="personal-symbol-monitor")
     finally:
+        await personal_monitor.close()
         await bot.session.close()
         await database.dispose()
 

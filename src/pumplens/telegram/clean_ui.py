@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import uuid
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import cast
@@ -10,6 +11,8 @@ from urllib.parse import quote
 
 from aiogram import Bot, F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +21,8 @@ from pumplens.analytics.early_stats import load_early_statistics
 from pumplens.config import AppSettings, RuntimeSecrets
 from pumplens.onboarding.invites import InviteError
 from pumplens.onboarding.service import OnboardingService
+from pumplens.personal_monitor.presentation import format_scenario, format_status
+from pumplens.personal_monitor.service import PersonalMonitorService, UnknownFuturesSymbol
 from pumplens.portfolio.service import PortfolioReconciler
 from pumplens.service_state import ServiceState
 from pumplens.storage.db import Database
@@ -49,6 +54,9 @@ from pumplens.telegram.keyboards import (
     main_reply_keyboard,
     panel_binance_keyboard,
     panel_settings_keyboard,
+    personal_monitor_active_keyboard,
+    personal_monitor_prompt_keyboard,
+    personal_monitor_result_keyboard,
     portfolio_keyboard,
     profile_keyboard,
     signals_keyboard,
@@ -64,6 +72,10 @@ from pumplens.webapp.sessions import ConnectSessionStore
 
 router = Router(name="pumplens-clean-ui")
 onboarding = OnboardingService()
+
+
+class PersonalMonitorInput(StatesGroup):
+    symbol = State()
 
 
 @router.message(CommandStart())
@@ -421,6 +433,144 @@ REPLY_MENU_SECTIONS = {
     "⚙️ Настройки": "settings",
     "🔗 Binance": "binance",
 }
+
+
+@router.message(F.text == "🔎 Мониторить монету")
+async def personal_monitor_prompt_handler(
+    message: Message,
+    bot: Bot,
+    database: Database,
+    state: FSMContext,
+) -> None:
+    if message.from_user is None:
+        return
+    await delete_command_best_effort(bot, message)
+    await state.set_state(PersonalMonitorInput.symbol)
+    await show_or_edit_panel(
+        bot,
+        database,
+        telegram_user_id=message.from_user.id,
+        chat_id=message.chat.id,
+        text="<b>Введите Binance Futures символ, например ZKUSDT</b>",
+        reply_markup=personal_monitor_prompt_keyboard(),
+        force_send=True,
+    )
+
+
+@router.message(PersonalMonitorInput.symbol)
+async def personal_monitor_symbol_handler(
+    message: Message,
+    bot: Bot,
+    database: Database,
+    state: FSMContext,
+    personal_monitor: PersonalMonitorService,
+) -> None:
+    if message.from_user is None or message.text is None:
+        return
+    await delete_command_best_effort(bot, message)
+    try:
+        scenario = await personal_monitor.analyze_for_user(
+            message.from_user.id,
+            message.chat.id,
+            message.text,
+        )
+    except UnknownFuturesSymbol:
+        await show_or_edit_panel(
+            bot,
+            database,
+            telegram_user_id=message.from_user.id,
+            chat_id=message.chat.id,
+            text=(
+                "Символ не найден среди активных Binance USDⓈ-M perpetual.\n"
+                "Введите, например, <b>ZKUSDT</b>."
+            ),
+            reply_markup=personal_monitor_prompt_keyboard(),
+        )
+        return
+    except Exception:
+        await state.clear()
+        await show_or_edit_panel(
+            bot,
+            database,
+            telegram_user_id=message.from_user.id,
+            chat_id=message.chat.id,
+            text="Не удалось получить свежий анализ Binance. Попробуйте позже.",
+            reply_markup=top_level_keyboard(),
+        )
+        return
+    await state.clear()
+    await show_or_edit_panel(
+        bot,
+        database,
+        telegram_user_id=message.from_user.id,
+        chat_id=message.chat.id,
+        text=format_scenario(scenario),
+        reply_markup=personal_monitor_result_keyboard(scenario),
+    )
+
+
+@router.callback_query(F.data.startswith("monitor:"))
+async def personal_monitor_callback(
+    callback: CallbackQuery,
+    bot: Bot,
+    database: Database,
+    state: FSMContext,
+    personal_monitor: PersonalMonitorService,
+) -> None:
+    if callback.from_user is None or callback.data is None:
+        return
+    await callback.answer()
+    parts = callback.data.split(":")
+    action = parts[1] if len(parts) > 1 else ""
+    if action == "cancel":
+        await state.clear()
+        await _edit_callback(
+            callback,
+            bot,
+            database,
+            "Персональный монитор не изменён. Выберите раздел в меню внизу.",
+            top_level_keyboard(),
+        )
+        return
+    if len(parts) != 3:
+        return
+    try:
+        scenario_id = uuid.UUID(hex=parts[2])
+        if action == "activate":
+            scenario = await personal_monitor.activate(callback.from_user.id, scenario_id)
+            text = format_status(scenario)
+            keyboard = personal_monitor_active_keyboard(scenario)
+        elif action == "recalc":
+            scenario = await personal_monitor.recalculate(callback.from_user.id, scenario_id)
+            text = format_scenario(scenario)
+            keyboard = personal_monitor_result_keyboard(scenario)
+        elif action == "stop":
+            scenario = await personal_monitor.stop(callback.from_user.id, scenario_id)
+            text = format_status(scenario)
+            keyboard = top_level_keyboard()
+        elif action == "status":
+            current_scenario = await personal_monitor.current(callback.from_user.id)
+            if current_scenario is None:
+                raise ValueError("Scenario not found")
+            scenario = current_scenario
+            text = format_status(current_scenario)
+            keyboard = (
+                personal_monitor_active_keyboard(current_scenario)
+                if current_scenario.is_active
+                else personal_monitor_result_keyboard(current_scenario)
+            )
+        else:
+            return
+    except (ValueError, RuntimeError):
+        await _edit_callback(
+            callback,
+            bot,
+            database,
+            "Сценарий больше не доступен. Запустите новый анализ через меню.",
+            top_level_keyboard(),
+        )
+        return
+    await _edit_callback(callback, bot, database, text, keyboard)
 
 
 @router.message(F.text.in_(set(REPLY_MENU_SECTIONS)))

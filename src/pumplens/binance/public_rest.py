@@ -11,7 +11,14 @@ import httpx
 import structlog
 
 from pumplens.binance.rate_limiter import AsyncTokenBucket
-from pumplens.domain.models import Kline, OpenInterestPoint, SymbolSpec, Ticker24h
+from pumplens.domain.models import (
+    BookTicker,
+    Kline,
+    MarkPrice,
+    OpenInterestPoint,
+    SymbolSpec,
+    Ticker24h,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -97,6 +104,61 @@ class BinancePublicClient:
             )
             for row in payload
         }
+
+    async def ticker_24h(self, symbol: str) -> Ticker24h:
+        """Fetch one rolling ticker without all-market weight. / Получает один тикер."""
+
+        payload = await self._get(
+            "/fapi/v1/ticker/24hr",
+            params={"symbol": symbol},
+            weight=1,
+        )
+        if not isinstance(payload, Mapping):
+            raise BinancePublicError("single-symbol 24h ticker response is invalid")
+        return Ticker24h(
+            symbol=str(payload["symbol"]),
+            last_price=float(payload["lastPrice"]),
+            quote_volume=float(payload["quoteVolume"]),
+            price_change_pct=float(payload["priceChangePercent"]),
+            event_time_ms=int(payload.get("closeTime", 0)),
+        )
+
+    async def book_ticker(self, symbol: str) -> BookTicker:
+        """Fetch one best bid/ask snapshot. / Получает лучший bid/ask одной монеты."""
+
+        payload = await self._get(
+            "/fapi/v1/ticker/bookTicker",
+            params={"symbol": symbol},
+            weight=2,
+        )
+        if not isinstance(payload, Mapping):
+            raise BinancePublicError("single-symbol book ticker response is invalid")
+        return BookTicker(
+            symbol=str(payload["symbol"]),
+            bid_price=float(payload["bidPrice"]),
+            bid_quantity=float(payload["bidQty"]),
+            ask_price=float(payload["askPrice"]),
+            ask_quantity=float(payload["askQty"]),
+            event_time_ms=int(payload.get("time", int(time.time() * 1_000))),
+        )
+
+    async def mark_price(self, symbol: str) -> MarkPrice:
+        """Fetch one premium-index snapshot. / Получает mark/index одной монеты."""
+
+        payload = await self._get(
+            "/fapi/v1/premiumIndex",
+            params={"symbol": symbol},
+            weight=1,
+        )
+        if not isinstance(payload, Mapping):
+            raise BinancePublicError("single-symbol mark price response is invalid")
+        return MarkPrice(
+            symbol=str(payload["symbol"]),
+            mark_price=float(payload["markPrice"]),
+            index_price=float(payload["indexPrice"]),
+            funding_rate=float(payload.get("lastFundingRate", 0.0)),
+            event_time_ms=int(payload.get("time", int(time.time() * 1_000))),
+        )
 
     async def klines(
         self,

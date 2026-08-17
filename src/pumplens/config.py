@@ -243,6 +243,16 @@ class TelegramSettings(StrictModel):
     cleanup_scan_seconds: PositiveFloat = 60.0
 
 
+class PersonalMonitorSettings(StrictModel):
+    """Bounded runtime for user-selected symbols. / Ограниченный runtime выбранных монет."""
+
+    enabled: bool = True
+    discovery_seconds: PositiveFloat = 3.0
+    warmup_klines: PositiveInt = Field(default=180, ge=30, le=180)
+    max_active_symbols: PositiveInt = Field(default=50, le=200)
+    exchange_info_ttl_seconds: PositiveInt = 900
+
+
 class AppSettings(StrictModel):
     binance: BinanceSettings = BinanceSettings()
     scanner: ScannerSettings = ScannerSettings()
@@ -255,6 +265,7 @@ class AppSettings(StrictModel):
     replay: ReplaySettings = ReplaySettings()
     notifications: NotificationSettings = NotificationSettings()
     telegram: TelegramSettings = TelegramSettings()
+    personal_monitor: PersonalMonitorSettings = PersonalMonitorSettings()
 
 
 class RuntimeSecrets(BaseSettings):

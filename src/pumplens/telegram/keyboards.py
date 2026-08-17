@@ -8,6 +8,8 @@ from aiogram.types import (
     WebAppInfo,
 )
 
+from pumplens.storage.models import MonitoredScenarioRecord
+
 
 def welcome_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -116,6 +118,7 @@ def main_reply_keyboard() -> ReplyKeyboardMarkup:
                 KeyboardButton(text="⚙️ Настройки"),
                 KeyboardButton(text="🔗 Binance"),
             ],
+            [KeyboardButton(text="🔎 Мониторить монету")],
         ],
         is_persistent=True,
         resize_keyboard=True,
@@ -127,6 +130,71 @@ def top_level_keyboard() -> InlineKeyboardMarkup:
     """Top-level screens navigate through the persistent reply menu. / Навигация через menu."""
 
     return InlineKeyboardMarkup(inline_keyboard=[])
+
+
+def personal_monitor_prompt_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="monitor:cancel")],
+        ]
+    )
+
+
+def personal_monitor_result_keyboard(
+    scenario: MonitoredScenarioRecord,
+) -> InlineKeyboardMarkup:
+    scenario_id = scenario.id.hex
+    if scenario.status in {"CONFIRMED", "INVALIDATED", "STOPPED"}:
+        return top_level_keyboard()
+    primary = (
+        InlineKeyboardButton(
+            text="📡 Мониторить сценарий",
+            callback_data=f"monitor:activate:{scenario_id}",
+        )
+        if scenario.direction is not None
+        else InlineKeyboardButton(
+            text="🔄 Продолжить наблюдение",
+            callback_data=f"monitor:activate:{scenario_id}",
+        )
+    )
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [primary],
+            [
+                InlineKeyboardButton(
+                    text="🔄 Пересчитать",
+                    callback_data=f"monitor:recalc:{scenario_id}",
+                ),
+                InlineKeyboardButton(text="❌ Отмена", callback_data="monitor:cancel"),
+            ],
+        ]
+    )
+
+
+def personal_monitor_active_keyboard(
+    scenario: MonitoredScenarioRecord,
+) -> InlineKeyboardMarkup:
+    scenario_id = scenario.id.hex
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📊 Статус",
+                    callback_data=f"monitor:status:{scenario_id}",
+                ),
+                InlineKeyboardButton(
+                    text="🔄 Пересчитать сейчас",
+                    callback_data=f"monitor:recalc:{scenario_id}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🛑 Остановить мониторинг",
+                    callback_data=f"monitor:stop:{scenario_id}",
+                )
+            ],
+        ]
+    )
 
 
 def portfolio_keyboard(active: str = "overview") -> InlineKeyboardMarkup:

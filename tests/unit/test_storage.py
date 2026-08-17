@@ -134,6 +134,7 @@ def test_schema_contains_all_mvp_tables() -> None:
         "risk_alerts",
         "deliveries",
         "service_health",
+        "monitored_scenarios",
     }
     assert expected <= set(Base.metadata.tables)
 
@@ -229,7 +230,8 @@ def test_migrations_upgrade_through_stage_c(
         "reason_codes_json",
     } <= feature_columns
     assert "last_sampled_at" in outcome_columns
-    assert revision == ("0008_stage_c_entry_analysis",)
+    assert "monitored_scenarios" in tables
+    assert revision == ("0009_personal_symbol_monitor",)
 
 
 def test_existing_0006_database_upgrades_to_stage_c(
@@ -256,7 +258,7 @@ def test_existing_0006_database_upgrades_to_stage_c(
         signal_columns = {
             row[1] for row in connection.execute("PRAGMA table_info(signals)").fetchall()
         }
-    assert revision == ("0008_stage_c_entry_analysis",)
+    assert revision == ("0009_personal_symbol_monitor",)
     assert "telegram_menu_message_id" in user_columns
     assert {"earn_holdings", "funding_holdings"} <= tables
     assert {"entry_quality", "final_decision"} <= signal_columns
@@ -296,6 +298,45 @@ def test_existing_0007_database_upgrades_to_stage_c(
             row[1]
             for row in connection.execute("PRAGMA table_info(signal_outcomes)").fetchall()
         }
-    assert revision == ("0008_stage_c_entry_analysis",)
+    assert revision == ("0009_personal_symbol_monitor",)
     assert {"stage_c_json", "entry_quality", "final_decision"} <= feature_columns
     assert "last_sampled_at" in outcome_columns
+
+
+def test_existing_0008_database_upgrades_to_personal_monitor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = Path(__file__).parents[2]
+    database_path = tmp_path / "migration-from-0008.sqlite"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{database_path}")
+    config = Config(root / "alembic.ini")
+    command.upgrade(config, "0008_stage_c_entry_analysis")
+    # 0001 uses current metadata; remove 0009's table to reproduce production 0008.
+    # 0001 использует current metadata; удаляем таблицу 0009 для production path.
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("DROP TABLE monitored_scenarios")
+    command.upgrade(config, "head")
+    with sqlite3.connect(database_path) as connection:
+        revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
+        columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(monitored_scenarios)"
+            ).fetchall()
+        }
+        indexes = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA index_list(monitored_scenarios)"
+            ).fetchall()
+        }
+    assert revision == ("0009_personal_symbol_monitor",)
+    assert {
+        "user_id",
+        "symbol",
+        "status",
+        "last_evaluated_candle_open_time",
+        "analysis_json",
+    } <= columns
+    assert "uq_monitored_scenarios_active_user" in indexes

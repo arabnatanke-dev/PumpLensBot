@@ -37,6 +37,7 @@ from pumplens.telegram.clean_ui import (
     clean_reply_menu_handler,
     clean_screen_callback,
     clean_start_handler,
+    personal_monitor_prompt_handler,
 )
 from pumplens.telegram.handlers import why_handler
 from pumplens.telegram.keyboards import (
@@ -118,6 +119,7 @@ def test_main_reply_keyboard_contract() -> None:
         ["💼 Портфель", "📈 Сигналы"],
         ["📊 Позиции", "🧪 EARLY"],
         ["⚙️ Настройки", "🔗 Binance"],
+        ["🔎 Мониторить монету"],
     ]
     assert keyboard.is_persistent is True
     assert keyboard.resize_keyboard is True
@@ -440,6 +442,39 @@ async def test_reply_navigation_survives_old_screen_delete_failure(
         )
         assert user is not None and user.telegram_panel_message_id == 900
         assert user.telegram_menu_message_id == 55
+
+
+async def test_personal_monitor_prompt_keeps_reply_menu_anchor(
+    database: Database,
+) -> None:
+    await _user(database, panel_id=77, menu_id=55)
+    bot = FakeBot()
+    state = SimpleNamespace(set_state=AsyncMock())
+    message = cast(
+        Any,
+        SimpleNamespace(
+            from_user=SimpleNamespace(id=42),
+            chat=SimpleNamespace(id=42),
+            message_id=66,
+            text="🔎 Мониторить монету",
+        ),
+    )
+    await personal_monitor_prompt_handler(
+        message,
+        cast(Bot, cast(Any, bot)),
+        database,
+        cast(Any, state),
+    )
+    assert bot.deleted == [(42, 66), (42, 77)]
+    assert (42, 55) not in bot.deleted
+    assert bot.sent == [42]
+    async with database.session() as session:
+        user = await session.scalar(
+            select(UserRecord).where(UserRecord.telegram_user_id == 42)
+        )
+        assert user is not None
+        assert user.telegram_menu_message_id == 55
+        assert user.telegram_panel_message_id == 900
 
 
 async def test_start_survives_anchor_and_content_delete_failures(
